@@ -106,24 +106,32 @@ export function computeChainOrigin(
 
   let pos: Vec3 = [0, 0, 0];
   let rot: Mat3 = identity3();
-  let scale = 1;
+  let scale: Vec3 = [1, 1, 1];
 
   for (const node of path) {
     if (node.kind !== "transform") continue;
     if (node.type === "translate") {
       const t = getVec3Param(node.params, "offset", [0, 0, 0]);
-      const local: Vec3 = [t[0] * scale, t[1] * scale, t[2] * scale];
+      const local: Vec3 = [t[0] * scale[0], t[1] * scale[1], t[2] * scale[2]];
       const world = applyMat3(rot, local);
       pos = [pos[0] + world[0], pos[1] + world[1], pos[2] + world[2]];
     } else if (node.type === "rotateEuler") {
       const a = getVec3Param(node.params, "angles", [0, 0, 0]);
       rot = multiplyMat3(rot, eulerXYZToMat3(a));
     } else if (node.type === "scaleUniform") {
-      scale *= getFloatParam(node.params, "scale", 1);
+      const s = readScale(node.params.scale);
+      scale = [scale[0] * s[0], scale[1] * s[1], scale[2] * s[2]];
     }
     // mirror / twist / bend / displace do not contribute to chain origin.
   }
   return pos;
+}
+
+// Backwards-compat: legacy trees stored scale as a single number.
+function readScale(v: unknown): Vec3 {
+  if (Array.isArray(v) && v.length === 3) return v as Vec3;
+  if (typeof v === "number") return [v, v, v];
+  return [1, 1, 1];
 }
 
 // --- Camera projection ----------------------------------------------------
@@ -172,26 +180,30 @@ export function orbitEye(yaw: number, pitch: number, distance: number): Vec3 {
   return [distance * sy * cp, distance * sp, distance * cy * cp];
 }
 
-/** Accumulated parent transform (rotation + uniform scale) up to but not
+/** Accumulated parent transform (rotation + scale) up to but not
  *  including the target node. Used to convert world-space deltas into the
  *  local frame in which a Translate node's offset is expressed. */
 export function computeParentTransform(
   root: SdfNode,
   targetId: NodeId,
-): { rotation: Mat3; scale: number } | null {
+): { rotation: Mat3; scale: Vec3 } | null {
   const path: SdfNode[] = [];
   if (!findPath(root, targetId, path)) return null;
 
   let rot: Mat3 = identity3();
-  let scale = 1;
+  let scale: Vec3 = [1, 1, 1];
   // walk path EXCEPT the last node (which is the target itself).
   for (let i = 0; i < path.length - 1; i++) {
     const node = path[i];
     if (node.kind !== "transform") continue;
     if (node.type === "rotateEuler") {
-      rot = multiplyMat3(rot, eulerXYZToMat3(getVec3Param(node.params, "angles", [0, 0, 0])));
+      rot = multiplyMat3(
+        rot,
+        eulerXYZToMat3(getVec3Param(node.params, "angles", [0, 0, 0])),
+      );
     } else if (node.type === "scaleUniform") {
-      scale *= getFloatParam(node.params, "scale", 1);
+      const s = readScale(node.params.scale);
+      scale = [scale[0] * s[0], scale[1] * s[1], scale[2] * s[2]];
     }
     // translate / other transforms do not affect rotation/scale frame.
   }

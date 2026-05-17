@@ -30,8 +30,32 @@ function computeChainSnapshot(root: SdfNode, nodeId: NodeId) {
   return {
     chainOrigin,
     parentRotation: pt?.rotation ?? identity3(),
-    parentScale: pt?.scale ?? 1,
+    parentScale: (pt?.scale ?? [1, 1, 1]) as [number, number, number],
   };
+}
+
+/** Convert any legacy scaleUniform.params.scale `number` to `[s,s,s]`. */
+function migrateNode(node: SdfNode): SdfNode {
+  let n = node;
+  if (n.kind === "transform" && n.type === "scaleUniform") {
+    const v = n.params.scale;
+    if (typeof v === "number") {
+      n = { ...n, params: { ...n.params, scale: [v, v, v] } };
+    }
+  }
+  if (n.kind === "transform" && n.child) {
+    const migrated = migrateNode(n.child);
+    if (migrated !== n.child) n = { ...n, child: migrated };
+  } else if (n.kind === "boolean") {
+    let changed = false;
+    const newChildren = n.children.map((c) => {
+      const m = migrateNode(c);
+      if (m !== c) changed = true;
+      return m;
+    });
+    if (changed) n = { ...n, children: newChildren };
+  }
+  return n;
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -319,7 +343,7 @@ export type ModalState = {
   canvasHeight: number;
   chainOrigin: [number, number, number];
   parentRotation: number[]; // Mat3 row-major
-  parentScale: number;
+  parentScale: [number, number, number];
   constraint: GrabAxis | null;
 };
 
@@ -828,8 +852,9 @@ export const useStore = create<StoreState>((set, get) => ({
       set({ root: null, selectedId: null, collapsedIds: {} });
       return;
     }
-    // Deep-clone via cloneNode → new IDs, so we never collide with current tree.
-    const fresh = cloneNode(tree);
+    // Migrate any legacy fields, then deep-clone with new IDs so we don't
+    // collide with the current tree.
+    const fresh = cloneNode(migrateNode(tree));
     set({
       root: fresh,
       selectedId: fresh.id,

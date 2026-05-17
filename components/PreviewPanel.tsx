@@ -164,15 +164,18 @@ function computeGrabOffset(
 
   const Rinv = transposeMat3(m.parentRotation as Mat3);
   const local = applyMat3(Rinv, worldDelta);
-  const s = m.parentScale || 1;
+  const ps = m.parentScale;
+  const sx = ps[0] || 1;
+  const sy = ps[1] || 1;
+  const sz = ps[2] || 1;
   const origOffset =
     (m.originalParams.offset as [number, number, number] | undefined) ?? [
       0, 0, 0,
     ];
   return [
-    origOffset[0] + local[0] / s,
-    origOffset[1] + local[1] / s,
-    origOffset[2] + local[2] / s,
+    origOffset[0] + local[0] / sx,
+    origOffset[1] + local[1] / sy,
+    origOffset[2] + local[2] / sz,
   ];
 }
 
@@ -249,12 +252,12 @@ function computeRotateAngles(
   return matToEulerXYZDeg(newRLocal);
 }
 
-function computeScaleValue(
+function computeScaleVector(
   m: ModalState,
   cursorX: number,
   cursorY: number,
-): number {
-  const origScale = (m.originalParams.scale as number) ?? 1;
+): [number, number, number] {
+  const orig = readScaleParam(m.originalParams.scale);
   const eye = m.cameraEye as Vec3;
   const target = m.cameraTarget as Vec3;
   const up = m.cameraUp as Vec3;
@@ -263,7 +266,7 @@ function computeScaleValue(
     eye, target, up,
     m.canvasWidth, m.canvasHeight,
   );
-  if (!proj.visible) return origScale;
+  if (!proj.visible) return orig;
   const cx = proj.x, cy = proj.y;
   const sdx = m.startMouseX - cx;
   const sdy = m.startMouseY - cy;
@@ -271,9 +274,23 @@ function computeScaleValue(
   const cdy = cursorY - cy;
   const startDist = Math.sqrt(sdx * sdx + sdy * sdy);
   const currDist = Math.sqrt(cdx * cdx + cdy * cdy);
-  if (startDist < 2) return origScale;
+  if (startDist < 2) return orig;
   const factor = currDist / startDist;
-  return Math.max(0.0001, origScale * factor);
+  const clamp = (v: number) => Math.max(0.0001, v);
+  if (m.constraint === "X") return [clamp(orig[0] * factor), orig[1], orig[2]];
+  if (m.constraint === "Y") return [orig[0], clamp(orig[1] * factor), orig[2]];
+  if (m.constraint === "Z") return [orig[0], orig[1], clamp(orig[2] * factor)];
+  return [
+    clamp(orig[0] * factor),
+    clamp(orig[1] * factor),
+    clamp(orig[2] * factor),
+  ];
+}
+
+function readScaleParam(v: unknown): [number, number, number] {
+  if (Array.isArray(v) && v.length === 3) return v as [number, number, number];
+  if (typeof v === "number") return [v, v, v];
+  return [1, 1, 1];
 }
 
 function computeModalParams(
@@ -288,7 +305,7 @@ function computeModalParams(
     return { angles: computeRotateAngles(m, cursorX, cursorY) };
   }
   if (m.mode === "scale") {
-    return { scale: computeScaleValue(m, cursorX, cursorY) };
+    return { scale: computeScaleVector(m, cursorX, cursorY) };
   }
   return {};
 }

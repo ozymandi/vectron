@@ -116,7 +116,7 @@ const mengerCarve = P({
       kind: "transform",
       type: "scaleUniform",
       enabled: true,
-      params: { scale: 0.6 },
+      params: { scale: [0.6, 0.6, 0.6] },
       child: P({
         id: "_menger_child",
         kind: "primitive",

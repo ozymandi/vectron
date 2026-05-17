@@ -192,18 +192,30 @@ export const TRANSFORMS: Record<TransformType, TransformDef> = {
       type: "scaleUniform",
       kind: "transform",
       category: "Transforms",
-      label: "Scale (uniform)",
+      label: "Scale",
       params: [
-        { key: "scale", label: "Scale", type: "float", default: 1, min: 0.0001, step: 0.05 },
+        {
+          key: "scale",
+          label: "Scale",
+          type: "vec3",
+          default: [1, 1, 1],
+          step: 0.05,
+        },
       ],
     },
     emitPoint: (out, inp, params) => {
-      const s = getFloat(params, "scale", 1);
-      return [`vector ${out} = ${inp} / ${f(s)};`];
+      const s = getVec3(params, "scale", [1, 1, 1]);
+      return [
+        `vector ${out} = vector(${inp}[0] / ${f(s[0])}, ${inp}[1] / ${f(s[1])}, ${inp}[2] / ${f(s[2])});`,
+      ];
     },
     emitDistance: (outDist, childDist, _pt, params) => {
-      const s = getFloat(params, "scale", 1);
-      return [`float ${outDist} = ${childDist} * ${f(s)};`];
+      // For non-uniform scale, distance is only approximate. Use the smallest
+      // axis scale factor — under-estimates the true distance, which is safe
+      // for ray-marching (no over-stepping).
+      const s = getVec3(params, "scale", [1, 1, 1]);
+      const minAbs = `min(abs(${f(s[0])}), min(abs(${f(s[1])}), abs(${f(s[2])})))`;
+      return [`float ${outDist} = ${childDist} * ${minAbs};`];
     },
   },
 
