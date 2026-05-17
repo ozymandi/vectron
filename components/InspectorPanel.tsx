@@ -54,6 +54,7 @@ export function InspectorPanel() {
   const selectedId = useStore((s) => s.selectedId);
   const updateParam = useStore((s) => s.updateParam);
   const changeNodeType = useStore((s) => s.changeNodeType);
+  const setMatId = useStore((s) => s.setMatId);
 
   const node = useMemo(
     () => (selectedId ? findById(root, selectedId) : null),
@@ -100,9 +101,27 @@ export function InspectorPanel() {
         />
       </div>
 
-      {!hasParams && (
+      {!hasParams && node.kind !== "primitive" && (
         <div className="text-muted-foreground text-[11px] px-1 leading-relaxed">
           No parameters for this node.
+        </div>
+      )}
+
+      {node.kind === "primitive" && (
+        <div className="px-1 mb-3">
+          <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">
+            Material slot
+          </label>
+          <NumberInput
+            value={node.matId ?? 0}
+            min={0}
+            max={15}
+            step={1}
+            onChange={(v) => setMatId(node.id, v)}
+          />
+          <p className="text-[10px] text-muted-foreground mt-1 leading-relaxed">
+            Selects which slot of an Octane <span className="text-foreground">Composite Material</span> applies when this primitive's surface is visible.
+          </p>
         </div>
       )}
 

@@ -211,24 +211,24 @@ export const PRIMITIVES: Record<PrimitiveType, PrimitiveDef> = {
     helperName: "sd_cone",
     helperCode: `float sd_cone(vector p, float r, float h)
 {
-    // p[1] = 0 at base, p[1] = h at tip (cone pointing +Y).
+    // Capped cone with apex at (0, h, 0), base at y=0 with radius r.
+    // IQ capped-cone formula with r_top = 0.
     float qx = sqrt(p[0] * p[0] + p[2] * p[2]);
-    vector q = vector(qx, p[1], 0.0);
-    vector tip = vector(0.0, h, 0.0);
-    vector base = vector(r, 0.0, 0.0);
-    vector ba = base - tip;
-    vector pa = q - tip;
-    float baba = ba[0] * ba[0] + ba[1] * ba[1];
-    float paba = pa[0] * ba[0] + pa[1] * ba[1];
-    float t = clamp(paba / baba, 0.0, 1.0);
-    vector c1 = pa - ba * t;
-    float d1 = c1[0] * c1[0] + c1[1] * c1[1];
-    // cap at base
-    float capY = q[1];
-    float capX = max(q[0] - r, 0.0);
-    float d2 = capX * capX + min(capY, 0.0) * min(capY, 0.0);
-    float s = (q[1] < 0.0 || q[0] * ba[1] - q[1] * ba[0] > 0.0) ? -1.0 : 1.0;
-    return s * sqrt(min(d1, d2));
+    float half_h = h * 0.5;
+    float py = p[1] - half_h; // center on y axis
+    // Cap component
+    float ca_rad = (py < 0.0) ? r : 0.0;
+    float cax = qx - min(qx, ca_rad);
+    float cay = abs(py) - half_h;
+    float ca2 = cax * cax + cay * cay;
+    // Slant component
+    float k2_dot = r * r + h * h;
+    float t = clamp((qx * r + h * (half_h - py)) / k2_dot, 0.0, 1.0);
+    float cbx = qx - r * t;
+    float cby = py - half_h + h * t;
+    float cb2 = cbx * cbx + cby * cby;
+    float sgn = (cbx < 0.0 && cay < 0.0) ? -1.0 : 1.0;
+    return sgn * sqrt(min(ca2, cb2));
 }`,
     call: (p, params) =>
       `sd_cone(${p}, ${f(getFloat(params, "radius", 0.5))}, ${f(

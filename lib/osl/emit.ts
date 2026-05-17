@@ -4,10 +4,13 @@ import { BOOLEANS, PRIMITIVES, TRANSFORMS } from "./registry";
 type EmitCtx = {
   pointCounter: number;
   distCounter: number;
+  matCounter: number;
   stmts: string[];
   primitiveHelpers: Set<PrimitiveType>;
   extraHelpers: Map<string, string>;
 };
+
+type WalkResult = { dist: string; mat: string };
 
 function nextPoint(ctx: EmitCtx): string {
   return `p${++ctx.pointCounter}`;
@@ -15,20 +18,28 @@ function nextPoint(ctx: EmitCtx): string {
 function nextDist(ctx: EmitCtx): string {
   return `d${++ctx.distCounter}`;
 }
+function nextMat(ctx: EmitCtx): string {
+  return `m${++ctx.matCounter}`;
+}
 
-function walk(node: SdfNode, currentPoint: string, ctx: EmitCtx): string {
+function walk(node: SdfNode, currentPoint: string, ctx: EmitCtx): WalkResult {
   if (!node.enabled) {
-    const dv = nextDist(ctx);
-    ctx.stmts.push(`float ${dv} = 1e6; // disabled: ${node.type}`);
-    return dv;
+    const d = nextDist(ctx);
+    const m = nextMat(ctx);
+    ctx.stmts.push(`float ${d} = 1e6; // disabled: ${node.type}`);
+    ctx.stmts.push(`int ${m} = 0;`);
+    return { dist: d, mat: m };
   }
 
   if (node.kind === "primitive") {
     const def = PRIMITIVES[node.type];
     ctx.primitiveHelpers.add(node.type);
-    const dv = nextDist(ctx);
-    ctx.stmts.push(`float ${dv} = ${def.call(currentPoint, node.params)};`);
-    return dv;
+    const d = nextDist(ctx);
+    const m = nextMat(ctx);
+    const matId = Math.max(0, Math.round(node.matId ?? 0));
+    ctx.stmts.push(`float ${d} = ${def.call(currentPoint, node.params)};`);
+    ctx.stmts.push(`int ${m} = ${matId};`);
+    return { dist: d, mat: m };
   }
 
   if (node.kind === "transform") {
@@ -45,19 +56,21 @@ function walk(node: SdfNode, currentPoint: string, ctx: EmitCtx): string {
       childPoint = np;
     }
     if (!node.child) {
-      const dv = nextDist(ctx);
-      ctx.stmts.push(`float ${dv} = 1e6; // transform without child`);
-      return dv;
+      const d = nextDist(ctx);
+      const m = nextMat(ctx);
+      ctx.stmts.push(`float ${d} = 1e6; // transform without child`);
+      ctx.stmts.push(`int ${m} = 0;`);
+      return { dist: d, mat: m };
     }
-    const childDist = walk(node.child, childPoint, ctx);
+    const child = walk(node.child, childPoint, ctx);
     if (def.emitDistance) {
       const nd = nextDist(ctx);
-      for (const stmt of def.emitDistance(nd, childDist, childPoint, node.params)) {
+      for (const stmt of def.emitDistance(nd, child.dist, childPoint, node.params)) {
         ctx.stmts.push(stmt);
       }
-      return nd;
+      return { dist: nd, mat: child.mat };
     }
-    return childDist;
+    return child;
   }
 
   // boolean
@@ -65,43 +78,59 @@ function walk(node: SdfNode, currentPoint: string, ctx: EmitCtx): string {
   if (def.helpers) {
     for (const h of def.helpers) ctx.extraHelpers.set(h.name, h.code);
   }
-  const activeChildren = node.children.filter((c) => c.enabled);
-  if (activeChildren.length === 0) {
-    const dv = nextDist(ctx);
-    ctx.stmts.push(`float ${dv} = 1e6; // empty ${node.type}`);
-    return dv;
+  const active = node.children.filter((c) => c.enabled);
+  if (active.length === 0) {
+    const d = nextDist(ctx);
+    const m = nextMat(ctx);
+    ctx.stmts.push(`float ${d} = 1e6; // empty ${node.type}`);
+    ctx.stmts.push(`int ${m} = 0;`);
+    return { dist: d, mat: m };
   }
-  const childDists = activeChildren.map((c) => walk(c, currentPoint, ctx));
-  if (childDists.length === 1) return childDists[0];
-  const dv = nextDist(ctx);
-  ctx.stmts.push(`float ${dv} = ${def.combine(childDists, node.params)};`);
-  return dv;
+  const childResults = active.map((c) => walk(c, currentPoint, ctx));
+  if (childResults.length === 1) return childResults[0];
+
+  let acc = childResults[0];
+  for (let i = 1; i < childResults.length; i++) {
+    const b = childResults[i];
+    const nd = nextDist(ctx);
+    const nm = nextMat(ctx);
+    const stmts = def.pairwise(acc, b, node.params, nd, nm);
+    for (const s of stmts) ctx.stmts.push(s);
+    acc = { dist: nd, mat: nm };
+  }
+  return acc;
 }
 
 export type ShaderParts = {
   helpers: string[];
   bodyStmts: string[];
   finalDist: string;
+  finalMat: string;
 };
 
-/** Build dialect-agnostic shader pieces. The output uses OSL types (`vector`),
- *  but is structured so that a simple text transform can yield GLSL. */
+/** Dialect-agnostic shader pieces. Tracks both distance and material id. */
 export function buildParts(root: SdfNode | null): ShaderParts | null {
   if (!root) return null;
   const ctx: EmitCtx = {
     pointCounter: 0,
     distCounter: 0,
+    matCounter: 0,
     stmts: [],
     primitiveHelpers: new Set(),
     extraHelpers: new Map(),
   };
   ctx.stmts.push(`vector p0 = P - Center;`);
-  const finalDist = walk(root, "p0", ctx);
+  const final = walk(root, "p0", ctx);
   const helpers = [
     ...[...ctx.primitiveHelpers].sort().map((t) => PRIMITIVES[t].helperCode),
     ...ctx.extraHelpers.values(),
   ];
-  return { helpers, bodyStmts: ctx.stmts, finalDist };
+  return {
+    helpers,
+    bodyStmts: ctx.stmts,
+    finalDist: final.dist,
+    finalMat: final.mat,
+  };
 }
 
 export type EmitResult = {
@@ -133,7 +162,8 @@ shader vectron(
   const helpersText = parts.helpers.length
     ? parts.helpers.join("\n\n") + "\n"
     : "";
-  const indent = (s: string) => s.split("\n").map((l) => (l ? "    " + l : l)).join("\n");
+  const indent = (s: string) =>
+    s.split("\n").map((l) => (l ? "    " + l : l)).join("\n");
   const body = parts.bodyStmts.map((s) => indent(s)).join("\n");
 
   const code = `${HEADER}
@@ -144,6 +174,7 @@ shader vectron(
 {
 ${body}
     out.dist = ${parts.finalDist};
+    out.matId = ${parts.finalMat};
 }
 `;
 

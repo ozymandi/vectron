@@ -1,10 +1,20 @@
 import type { BooleanType, NodeSpec, ParamsMap } from "../../types";
 import { f, getFloat } from "./util";
 
+/** Per-emission step: produce a new (dist, mat) pair from a left and right
+ *  pair, plus any helper statements that need to be inserted. */
+export type Operand = { dist: string; mat: string };
+export type PairwiseResult = { stmts: string[]; dist: string; mat: string };
+
 export type BooleanDef = {
   spec: NodeSpec;
-  // Reduce N distance expressions into a single combined distance expression.
-  combine: (dists: string[], params: ParamsMap) => string;
+  pairwise: (
+    a: Operand,
+    b: Operand,
+    params: ParamsMap,
+    newDist: string,
+    newMat: string,
+  ) => string[];
   helpers?: { name: string; code: string }[];
 };
 
@@ -53,7 +63,10 @@ export const BOOLEANS: Record<BooleanType, BooleanDef> = {
       label: "Union",
       params: [],
     },
-    combine: (dists) => dists.reduce((acc, d) => `min(${acc}, ${d})`),
+    pairwise: (a, b, _params, d, m) => [
+      `float ${d} = min(${a.dist}, ${b.dist});`,
+      `int ${m} = (${a.dist} < ${b.dist}) ? ${a.mat} : ${b.mat};`,
+    ],
   },
   intersection: {
     spec: {
@@ -63,7 +76,10 @@ export const BOOLEANS: Record<BooleanType, BooleanDef> = {
       label: "Intersection",
       params: [],
     },
-    combine: (dists) => dists.reduce((acc, d) => `max(${acc}, ${d})`),
+    pairwise: (a, b, _params, d, m) => [
+      `float ${d} = max(${a.dist}, ${b.dist});`,
+      `int ${m} = (${a.dist} > ${b.dist}) ? ${a.mat} : ${b.mat};`,
+    ],
   },
   subtract: {
     spec: {
@@ -73,10 +89,10 @@ export const BOOLEANS: Record<BooleanType, BooleanDef> = {
       label: "Subtract",
       params: [],
     },
-    combine: (dists) => {
-      if (dists.length < 2) return dists[0] ?? "1e6";
-      return dists.slice(1).reduce((acc, d) => `max(${acc}, -${d})`, dists[0]);
-    },
+    pairwise: (a, b, _params, d, m) => [
+      `float ${d} = max(${a.dist}, -${b.dist});`,
+      `int ${m} = (${a.dist} > -${b.dist}) ? ${a.mat} : ${b.mat};`,
+    ],
   },
 
   smoothUnion: {
@@ -87,9 +103,12 @@ export const BOOLEANS: Record<BooleanType, BooleanDef> = {
       label: "Smooth Union",
       params: [SMOOTHNESS_PARAM],
     },
-    combine: (dists, params) => {
+    pairwise: (a, b, params, d, m) => {
       const k = f(getFloat(params, "k", 0.2));
-      return dists.reduce((acc, d) => `op_smooth_union(${acc}, ${d}, ${k})`);
+      return [
+        `float ${d} = op_smooth_union(${a.dist}, ${b.dist}, ${k});`,
+        `int ${m} = (${a.dist} < ${b.dist}) ? ${a.mat} : ${b.mat};`,
+      ];
     },
     helpers: [SMOOTH_HELPERS.union],
   },
@@ -101,11 +120,12 @@ export const BOOLEANS: Record<BooleanType, BooleanDef> = {
       label: "Smooth Intersection",
       params: [SMOOTHNESS_PARAM],
     },
-    combine: (dists, params) => {
+    pairwise: (a, b, params, d, m) => {
       const k = f(getFloat(params, "k", 0.2));
-      return dists.reduce(
-        (acc, d) => `op_smooth_intersection(${acc}, ${d}, ${k})`,
-      );
+      return [
+        `float ${d} = op_smooth_intersection(${a.dist}, ${b.dist}, ${k});`,
+        `int ${m} = (${a.dist} > ${b.dist}) ? ${a.mat} : ${b.mat};`,
+      ];
     },
     helpers: [SMOOTH_HELPERS.intersection],
   },
@@ -117,12 +137,12 @@ export const BOOLEANS: Record<BooleanType, BooleanDef> = {
       label: "Smooth Subtract",
       params: [SMOOTHNESS_PARAM],
     },
-    combine: (dists, params) => {
-      if (dists.length < 2) return dists[0] ?? "1e6";
+    pairwise: (a, b, params, d, m) => {
       const k = f(getFloat(params, "k", 0.2));
-      return dists
-        .slice(1)
-        .reduce((acc, d) => `op_smooth_subtract(${acc}, ${d}, ${k})`, dists[0]);
+      return [
+        `float ${d} = op_smooth_subtract(${a.dist}, ${b.dist}, ${k});`,
+        `int ${m} = (${a.dist} > -${b.dist}) ? ${a.mat} : ${b.mat};`,
+      ];
     },
     helpers: [SMOOTH_HELPERS.subtract],
   },

@@ -354,6 +354,7 @@ type StoreState = {
   removeNode: (id: NodeId) => void;
   toggleEnabled: (id: NodeId) => void;
   updateParam: (id: NodeId, key: string, value: ParamValue) => void;
+  setMatId: (id: NodeId, matId: number) => void;
   changeNodeType: (id: NodeId, newType: string) => void;
   reset: () => void;
 
@@ -562,6 +563,15 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!found) return;
     const node = found.node;
     const updated = { ...node, params: { ...node.params, [key]: value } } as SdfNode;
+    set({ root: found.update(updated) });
+  },
+
+  setMatId: (id, matId) => {
+    const { root } = get();
+    if (!root) return;
+    const found = findById(root, id);
+    if (!found || found.node.kind !== "primitive") return;
+    const updated = { ...found.node, matId: Math.max(0, Math.round(matId)) };
     set({ root: found.update(updated) });
   },
 

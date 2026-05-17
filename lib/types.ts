@@ -66,6 +66,7 @@ export type PrimitiveNode = BaseNode & {
   kind: "primitive";
   type: PrimitiveType;
   params: ParamsMap;
+  matId?: number; // material slot, default 0
 };
 
 export type BooleanNode = BaseNode & {

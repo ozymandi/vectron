@@ -74,6 +74,27 @@ visually.
 If you see `error: No shader function defined`, you're likely in `Internal`
 mode without a Blender Text datablock selected. Switch to `External`.
 
+## Multi-material — colouring different parts of the SDF
+
+The OSL output sets `out.matId` to the material slot of whichever primitive's
+surface is visible at each shaded point. Default for every primitive is `0`.
+
+To map slots → actual Octane materials in Blender:
+
+1. In the generator, select a primitive in the tree and set its **Material
+   slot** in the Inspector (0, 1, 2, ...).
+2. Export `.osl` and load it via `External` mode as usual.
+3. In the Blender Octane shader graph, add a **Composite Material** node.
+4. Wire the Composite Material into Vectron's **Geometry material** socket.
+5. The Composite Material exposes inputs `Material 1`, `Material 2`, ... —
+   plug an Octane material (Diffuse, Specular, etc.) into each. **Slot index
+   N in the generator ↔ Material N+1 input on the node** (Octane is 1-based).
+6. Each region of the surface picks its material based on the `matId` set in
+   the OSL.
+
+`matId` is currently exposed on primitives only. To colour an entire branch,
+set the same slot on every primitive inside it.
+
 ## Tech
 
 - **Next.js 16** (App Router, Turbopack)
