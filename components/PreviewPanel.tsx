@@ -98,13 +98,25 @@ function buildProgram(
 
 // --- Modal math ------------------------------------------------------------
 
+const GRAB_SNAP = 0.05;
+const ROT_SNAP_DEG = 5;
+const SCALE_SNAP = 0.05;
+const SHIFT_DAMP = 0.1;
+
+function snapTo(v: number, step: number): number {
+  return Math.round(v / step) * step;
+}
+
 function computeGrabOffset(
   m: ModalState,
   cursorX: number,
   cursorY: number,
+  shift: boolean,
+  ctrl: boolean,
 ): [number, number, number] {
-  const dxScreen = cursorX - m.startMouseX;
-  const dyScreen = cursorY - m.startMouseY;
+  const damp = shift ? SHIFT_DAMP : 1;
+  const dxScreen = (cursorX - m.startMouseX) * damp;
+  const dyScreen = (cursorY - m.startMouseY) * damp;
 
   const eye = m.cameraEye as Vec3;
   const target = m.cameraTarget as Vec3;
@@ -172,17 +184,23 @@ function computeGrabOffset(
     (m.originalParams.offset as [number, number, number] | undefined) ?? [
       0, 0, 0,
     ];
-  return [
+  const out: [number, number, number] = [
     origOffset[0] + local[0] / sx,
     origOffset[1] + local[1] / sy,
     origOffset[2] + local[2] / sz,
   ];
+  if (ctrl) {
+    return [snapTo(out[0], GRAB_SNAP), snapTo(out[1], GRAB_SNAP), snapTo(out[2], GRAB_SNAP)];
+  }
+  return out;
 }
 
 function computeRotateAngles(
   m: ModalState,
   cursorX: number,
   cursorY: number,
+  shift: boolean,
+  ctrl: boolean,
 ): [number, number, number] {
   const eye = m.cameraEye as Vec3;
   const target = m.cameraTarget as Vec3;
@@ -215,6 +233,7 @@ function computeRotateAngles(
   // Wrap to (-π, π].
   while (deltaScreen > Math.PI) deltaScreen -= 2 * Math.PI;
   while (deltaScreen < -Math.PI) deltaScreen += 2 * Math.PI;
+  if (shift) deltaScreen *= SHIFT_DAMP;
 
   const forward = normalize3(sub(target, eye));
 
@@ -249,13 +268,23 @@ function computeRotateAngles(
     parentRT,
     multiplyMat3(deltaR, multiplyMat3(parentR, Rorig)),
   );
-  return matToEulerXYZDeg(newRLocal);
+  const angles = matToEulerXYZDeg(newRLocal);
+  if (ctrl) {
+    return [
+      snapTo(angles[0], ROT_SNAP_DEG),
+      snapTo(angles[1], ROT_SNAP_DEG),
+      snapTo(angles[2], ROT_SNAP_DEG),
+    ];
+  }
+  return angles;
 }
 
 function computeScaleVector(
   m: ModalState,
   cursorX: number,
   cursorY: number,
+  shift: boolean,
+  ctrl: boolean,
 ): [number, number, number] {
   const orig = readScaleParam(m.originalParams.scale);
   const eye = m.cameraEye as Vec3;
@@ -275,15 +304,17 @@ function computeScaleVector(
   const startDist = Math.sqrt(sdx * sdx + sdy * sdy);
   const currDist = Math.sqrt(cdx * cdx + cdy * cdy);
   if (startDist < 2) return orig;
-  const factor = currDist / startDist;
+  let factor = currDist / startDist;
+  if (shift) factor = 1 + (factor - 1) * SHIFT_DAMP;
   const clamp = (v: number) => Math.max(0.0001, v);
-  if (m.constraint === "X") return [clamp(orig[0] * factor), orig[1], orig[2]];
-  if (m.constraint === "Y") return [orig[0], clamp(orig[1] * factor), orig[2]];
-  if (m.constraint === "Z") return [orig[0], orig[1], clamp(orig[2] * factor)];
+  const maybeSnap = (v: number) => (ctrl ? Math.max(0.0001, snapTo(v, SCALE_SNAP)) : clamp(v));
+  if (m.constraint === "X") return [maybeSnap(orig[0] * factor), orig[1], orig[2]];
+  if (m.constraint === "Y") return [orig[0], maybeSnap(orig[1] * factor), orig[2]];
+  if (m.constraint === "Z") return [orig[0], orig[1], maybeSnap(orig[2] * factor)];
   return [
-    clamp(orig[0] * factor),
-    clamp(orig[1] * factor),
-    clamp(orig[2] * factor),
+    maybeSnap(orig[0] * factor),
+    maybeSnap(orig[1] * factor),
+    maybeSnap(orig[2] * factor),
   ];
 }
 
@@ -297,15 +328,17 @@ function computeModalParams(
   m: ModalState,
   cursorX: number,
   cursorY: number,
+  shift: boolean,
+  ctrl: boolean,
 ): ParamsMap {
   if (m.mode === "grab") {
-    return { offset: computeGrabOffset(m, cursorX, cursorY) };
+    return { offset: computeGrabOffset(m, cursorX, cursorY, shift, ctrl) };
   }
   if (m.mode === "rotate") {
-    return { angles: computeRotateAngles(m, cursorX, cursorY) };
+    return { angles: computeRotateAngles(m, cursorX, cursorY, shift, ctrl) };
   }
   if (m.mode === "scale") {
-    return { scale: computeScaleVector(m, cursorX, cursorY) };
+    return { scale: computeScaleVector(m, cursorX, cursorY, shift, ctrl) };
   }
   return {};
 }
@@ -736,7 +769,13 @@ export function PreviewPanel() {
       }
       const m = state.modalState;
       if (m) {
-        const params = computeModalParams(m, e.clientX, e.clientY);
+        const params = computeModalParams(
+          m,
+          e.clientX,
+          e.clientY,
+          e.shiftKey,
+          e.ctrlKey,
+        );
         state.applyModalParams(params);
       }
     };
@@ -807,7 +846,7 @@ export function PreviewPanel() {
         : null;
 
   const statusText = modalState
-    ? `${modeLabel}${modalState.constraint ? " " + modalState.constraint : ""} — LMB / Enter confirm · RMB / Esc cancel`
+    ? `${modeLabel}${modalState.constraint ? " " + modalState.constraint : ""} — Ctrl snap · Shift precision · LMB confirm · Esc cancel`
     : modalMode
       ? `${modeLabel} armed — move mouse to start, Esc to cancel`
       : null;
