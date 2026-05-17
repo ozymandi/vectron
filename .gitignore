@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Claude Code local state
+.claude/
+
+# misc local
+/scripts/smoke*.ts
