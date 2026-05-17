@@ -1,5 +1,48 @@
 import type { NodeSpec, ParamsMap, PrimitiveType } from "../../types";
-import { f, getFloat, getInt, getVec3, vec } from "./util";
+import { f, getFloat, getInt, getString, getVec3, vec } from "./util";
+
+const BASE_SHAPE_PARAM = {
+  key: "base",
+  label: "Base shape",
+  type: "select" as const,
+  default: "sphere",
+  options: [
+    { value: "sphere", label: "Sphere" },
+    { value: "box", label: "Box" },
+    { value: "octahedron", label: "Octahedron" },
+    { value: "torus", label: "Torus" },
+  ],
+};
+
+const BASE_SHAPE_TO_ID: Record<string, number> = {
+  sphere: 0,
+  box: 1,
+  octahedron: 2,
+  torus: 3,
+};
+
+// Branches on base_id and returns the SDF distance for the given `z`. The
+// constants below (radius 2, half-size 2, etc.) are conventional — adjust the
+// fractal's overall scale param if you want a different surface thickness.
+const FRACTAL_BASE_CODE = `
+    float base_d;
+    if (base_id == 1) {
+        // Box of half-size 2
+        vector qb = vector(abs(z[0]) - 2.0, abs(z[1]) - 2.0, abs(z[2]) - 2.0);
+        float ob = length(vector(max(qb[0], 0.0), max(qb[1], 0.0), max(qb[2], 0.0)));
+        float ib = min(max(qb[0], max(qb[1], qb[2])), 0.0);
+        base_d = ob + ib;
+    } else if (base_id == 2) {
+        // Octahedron of size 2
+        base_d = (abs(z[0]) + abs(z[1]) + abs(z[2]) - 2.0) * 0.57735027;
+    } else if (base_id == 3) {
+        // Torus (major=1.5, minor=0.4)
+        float qtx = sqrt(z[0] * z[0] + z[2] * z[2]) - 1.5;
+        base_d = sqrt(qtx * qtx + z[1] * z[1]) - 0.4;
+    } else {
+        // Sphere of radius 2 (default)
+        base_d = length(z) - 2.0;
+    }`;
 
 export type PrimitiveDef = {
   spec: NodeSpec;
@@ -523,10 +566,11 @@ export const PRIMITIVES: Record<PrimitiveType, PrimitiveDef> = {
       params: [
         { key: "iterations", label: "Iterations", type: "int", default: 8, min: 1, max: 20 },
         { key: "scale", label: "Scale", type: "float", default: 2, step: 0.05 },
+        BASE_SHAPE_PARAM,
       ],
     },
     helperName: "sd_sierpinski",
-    helperCode: `float sd_sierpinski(vector pos, int iterations, float scale)
+    helperCode: `float sd_sierpinski(vector pos, int iterations, float scale, int base_id)
 {
     vector z = pos;
     for (int i = 0; i < iterations; i = i + 1) {
@@ -535,13 +579,13 @@ export const PRIMITIVES: Record<PrimitiveType, PrimitiveDef> = {
         if (z[1] + z[2] < 0.0) z = vector(z[0], -z[2], -z[1]);
         float k = scale - 1.0;
         z = vector(z[0] * scale - k, z[1] * scale - k, z[2] * scale - k);
-    }
-    return (length(z) - 2.0) * pow(scale, -float(iterations));
+    }${FRACTAL_BASE_CODE}
+    return base_d * pow(scale, -float(iterations));
 }`,
     call: (p, params) =>
       `sd_sierpinski(${p}, ${getInt(params, "iterations", 8)}, ${f(
         getFloat(params, "scale", 2),
-      )})`,
+      )}, ${BASE_SHAPE_TO_ID[getString(params, "base", "sphere")] ?? 0})`,
   },
 
   juliaBulb: {
@@ -631,10 +675,11 @@ export const PRIMITIVES: Record<PrimitiveType, PrimitiveDef> = {
         { key: "scale", label: "Scale", type: "float", default: 2, min: 1.01, step: 0.05 },
         { key: "offset", label: "Offset", type: "vec3", default: [1, 1, 1], step: 0.05 },
         { key: "rotation", label: "Rotation per step (deg)", type: "vec3", default: [0, 0, 0], step: 1 },
+        BASE_SHAPE_PARAM,
       ],
     },
     helperName: "sd_kifs",
-    helperCode: `float sd_kifs(vector pos, int iterations, float scale, vector offset, vector rot_deg)
+    helperCode: `float sd_kifs(vector pos, int iterations, float scale, vector offset, vector rot_deg, int base_id)
 {
     vector z = pos;
     float dr = 1.0;
@@ -669,15 +714,15 @@ export const PRIMITIVES: Record<PrimitiveType, PrimitiveDef> = {
         float k = scale - 1.0;
         z = vector(scale * z[0] - offset[0] * k, scale * z[1] - offset[1] * k, scale * z[2] - offset[2] * k);
         dr = dr * scale;
-    }
-    return (length(z) - 2.0) / max(abs(dr), 0.0001);
+    }${FRACTAL_BASE_CODE}
+    return base_d / max(abs(dr), 0.0001);
 }`,
     call: (p, params) =>
       `sd_kifs(${p}, ${getInt(params, "iterations", 10)}, ${f(
         getFloat(params, "scale", 2),
       )}, ${vec(getVec3(params, "offset", [1, 1, 1]))}, ${vec(
         getVec3(params, "rotation", [0, 0, 0]),
-      )})`,
+      )}, ${BASE_SHAPE_TO_ID[getString(params, "base", "sphere")] ?? 0})`,
   },
 
   quaternionJulia: {
