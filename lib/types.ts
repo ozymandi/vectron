@@ -27,7 +27,12 @@ export type PrimitiveType =
   | "mandelbulb"
   | "mandelbox"
   | "mengerSponge"
-  | "sierpinski";
+  | "sierpinski"
+  | "juliaBulb"
+  | "apollonian"
+  | "kifs"
+  | "quaternionJulia"
+  | "pseudoKleinian";
 
 export type BooleanType =
   | "union"

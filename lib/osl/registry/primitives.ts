@@ -543,4 +543,221 @@ export const PRIMITIVES: Record<PrimitiveType, PrimitiveDef> = {
         getFloat(params, "scale", 2),
       )})`,
   },
+
+  juliaBulb: {
+    spec: {
+      type: "juliaBulb",
+      kind: "primitive",
+      category: "Fractals",
+      label: "Julia Bulb",
+      params: [
+        { key: "c", label: "C constant", type: "vec3", default: [0.353, 0.318, 0.27], step: 0.01 },
+        { key: "iterations", label: "Iterations", type: "int", default: 14, min: 1, max: 40 },
+        { key: "power", label: "Power", type: "float", default: 8, min: 1, step: 0.1 },
+        { key: "bailout", label: "Bailout", type: "float", default: 4, min: 1, step: 0.5 },
+      ],
+    },
+    helperName: "sd_julia_bulb",
+    helperCode: `float sd_julia_bulb(vector pos, vector c, int iterations, float power, float bailout)
+{
+    vector z = pos;
+    float dr = 1.0;
+    float r = 0.0;
+    for (int i = 0; i < iterations; i = i + 1) {
+        r = length(z);
+        if (r > bailout) break;
+        float theta = acos(z[2] / r);
+        float phi = atan2(z[1], z[0]);
+        dr = pow(r, power - 1.0) * power * dr + 1.0;
+        float zr = pow(r, power);
+        float tp = theta * power;
+        float pp = phi * power;
+        z = vector(zr * sin(tp) * cos(pp), zr * sin(pp) * sin(tp), zr * cos(tp));
+        z = vector(z[0] + c[0], z[1] + c[1], z[2] + c[2]);
+    }
+    return 0.5 * log(max(r, 0.0001)) * r / max(dr, 0.0001);
+}`,
+    call: (p, params) =>
+      `sd_julia_bulb(${p}, ${vec(getVec3(params, "c", [0.353, 0.318, 0.27]))}, ${getInt(
+        params,
+        "iterations",
+        14,
+      )}, ${f(getFloat(params, "power", 8))}, ${f(getFloat(params, "bailout", 4))})`,
+  },
+
+  apollonian: {
+    spec: {
+      type: "apollonian",
+      kind: "primitive",
+      category: "Fractals",
+      label: "Apollonian Gasket",
+      params: [
+        { key: "iterations", label: "Iterations", type: "int", default: 8, min: 1, max: 20 },
+        { key: "scale", label: "Scale", type: "float", default: 1.5, step: 0.05 },
+      ],
+    },
+    helperName: "sd_apollonian",
+    helperCode: `float sd_apollonian(vector pos, int iterations, float scale)
+{
+    vector p = pos;
+    float k = 1.0;
+    for (int i = 0; i < iterations; i = i + 1) {
+        // Fold into [-1, 1]^3 by reflection
+        p = vector(
+            p[0] - 2.0 * floor(0.5 * p[0] + 0.5),
+            p[1] - 2.0 * floor(0.5 * p[1] + 0.5),
+            p[2] - 2.0 * floor(0.5 * p[2] + 0.5));
+        float r2 = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+        float t = scale / max(r2, 0.0001);
+        p = vector(p[0] * t, p[1] * t, p[2] * t);
+        k = k * t;
+    }
+    return 0.25 * abs(p[1]) / max(k, 0.0001);
+}`,
+    call: (p, params) =>
+      `sd_apollonian(${p}, ${getInt(params, "iterations", 8)}, ${f(
+        getFloat(params, "scale", 1.5),
+      )})`,
+  },
+
+  kifs: {
+    spec: {
+      type: "kifs",
+      kind: "primitive",
+      category: "Fractals",
+      label: "Kaleidoscopic IFS",
+      params: [
+        { key: "iterations", label: "Iterations", type: "int", default: 10, min: 1, max: 30 },
+        { key: "scale", label: "Scale", type: "float", default: 2, min: 1.01, step: 0.05 },
+        { key: "offset", label: "Offset", type: "vec3", default: [1, 1, 1], step: 0.05 },
+        { key: "rotation", label: "Rotation per step (deg)", type: "vec3", default: [0, 0, 0], step: 1 },
+      ],
+    },
+    helperName: "sd_kifs",
+    helperCode: `float sd_kifs(vector pos, int iterations, float scale, vector offset, vector rot_deg)
+{
+    vector z = pos;
+    float dr = 1.0;
+    // Pre-compute Euler XYZ rotation matrix (R = Rx * Ry * Rz applied per step).
+    float ax = radians(rot_deg[0]);
+    float ay = radians(rot_deg[1]);
+    float az = radians(rot_deg[2]);
+    float cx = cos(ax); float sx = sin(ax);
+    float cy = cos(ay); float sy = sin(ay);
+    float cz = cos(az); float sz = sin(az);
+    float m00 = cy * cz;
+    float m01 = -cy * sz;
+    float m02 = sy;
+    float m10 = cx * sz + sx * sy * cz;
+    float m11 = cx * cz - sx * sy * sz;
+    float m12 = -sx * cy;
+    float m20 = sx * sz - cx * sy * cz;
+    float m21 = sx * cz + cx * sy * sz;
+    float m22 = cx * cy;
+    for (int i = 0; i < iterations; i = i + 1) {
+        z = vector(abs(z[0]), abs(z[1]), abs(z[2]));
+        // Sort: largest component first, reduces symmetry
+        if (z[1] > z[0]) z = vector(z[1], z[0], z[2]);
+        if (z[2] > z[0]) z = vector(z[2], z[1], z[0]);
+        if (z[2] > z[1]) z = vector(z[0], z[2], z[1]);
+        // Apply per-step rotation matrix
+        float nx = m00 * z[0] + m01 * z[1] + m02 * z[2];
+        float ny = m10 * z[0] + m11 * z[1] + m12 * z[2];
+        float nz = m20 * z[0] + m21 * z[1] + m22 * z[2];
+        z = vector(nx, ny, nz);
+        // Scale and offset
+        float k = scale - 1.0;
+        z = vector(scale * z[0] - offset[0] * k, scale * z[1] - offset[1] * k, scale * z[2] - offset[2] * k);
+        dr = dr * scale;
+    }
+    return (length(z) - 2.0) / max(abs(dr), 0.0001);
+}`,
+    call: (p, params) =>
+      `sd_kifs(${p}, ${getInt(params, "iterations", 10)}, ${f(
+        getFloat(params, "scale", 2),
+      )}, ${vec(getVec3(params, "offset", [1, 1, 1]))}, ${vec(
+        getVec3(params, "rotation", [0, 0, 0]),
+      )})`,
+  },
+
+  quaternionJulia: {
+    spec: {
+      type: "quaternionJulia",
+      kind: "primitive",
+      category: "Fractals",
+      label: "Quaternion Julia",
+      params: [
+        { key: "c", label: "C (x, y, z)", type: "vec3", default: [-0.2, 0.4, -0.4], step: 0.01 },
+        { key: "cw", label: "C w", type: "float", default: -0.4, step: 0.01 },
+        { key: "iterations", label: "Iterations", type: "int", default: 10, min: 1, max: 30 },
+        { key: "bailout", label: "Bailout", type: "float", default: 4, min: 1, step: 0.5 },
+      ],
+    },
+    helperName: "sd_quat_julia",
+    helperCode: `float sd_quat_julia(vector pos, vector c, float c_w, int iterations, float bailout)
+{
+    float qx = pos[0];
+    float qy = pos[1];
+    float qz = pos[2];
+    float qw = 0.0;
+    float md2 = 1.0;
+    float mz2 = qx * qx + qy * qy + qz * qz + qw * qw;
+    for (int i = 0; i < iterations; i = i + 1) {
+        md2 = md2 * 4.0 * mz2;
+        // q = q*q + c, with q*q for quaternion (treating real q with imaginary parts xy z)
+        float nw = qw * qw - qx * qx - qy * qy - qz * qz;
+        float nx = 2.0 * qw * qx;
+        float ny = 2.0 * qw * qy;
+        float nz = 2.0 * qw * qz;
+        qw = nw + c_w;
+        qx = nx + c[0];
+        qy = ny + c[1];
+        qz = nz + c[2];
+        mz2 = qx * qx + qy * qy + qz * qz + qw * qw;
+        if (mz2 > bailout) break;
+    }
+    return 0.25 * sqrt(mz2 / max(md2, 0.0001)) * log(max(mz2, 0.0001));
+}`,
+    call: (p, params) =>
+      `sd_quat_julia(${p}, ${vec(getVec3(params, "c", [-0.2, 0.4, -0.4]))}, ${f(
+        getFloat(params, "cw", -0.4),
+      )}, ${getInt(params, "iterations", 10)}, ${f(getFloat(params, "bailout", 4))})`,
+  },
+
+  pseudoKleinian: {
+    spec: {
+      type: "pseudoKleinian",
+      kind: "primitive",
+      category: "Fractals",
+      label: "Pseudo-Kleinian",
+      params: [
+        { key: "iterations", label: "Iterations", type: "int", default: 10, min: 1, max: 30 },
+        { key: "kr", label: "Sphere radius²", type: "float", default: 0.6, min: 0.01, step: 0.05 },
+        { key: "cs", label: "Cube size", type: "vec3", default: [1, 1, 1], step: 0.05 },
+      ],
+    },
+    helperName: "sd_pseudo_kleinian",
+    helperCode: `float sd_pseudo_kleinian(vector pos, int iterations, float kr, vector cs)
+{
+    vector p = pos;
+    float dr = 1.0;
+    for (int i = 0; i < iterations; i = i + 1) {
+        // Box fold (reflection inside the cube)
+        p = vector(
+            2.0 * clamp(p[0], -cs[0], cs[0]) - p[0],
+            2.0 * clamp(p[1], -cs[1], cs[1]) - p[1],
+            2.0 * clamp(p[2], -cs[2], cs[2]) - p[2]);
+        // Sphere inversion (only when inside)
+        float r2 = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+        float t = max(kr / max(r2, 0.0001), 1.0);
+        p = vector(p[0] * t, p[1] * t, p[2] * t);
+        dr = dr * t;
+    }
+    return 0.25 * abs(p[1]) / max(dr, 0.0001);
+}`,
+    call: (p, params) =>
+      `sd_pseudo_kleinian(${p}, ${getInt(params, "iterations", 10)}, ${f(
+        getFloat(params, "kr", 0.6),
+      )}, ${vec(getVec3(params, "cs", [1, 1, 1]))})`,
+  },
 };

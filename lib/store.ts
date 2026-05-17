@@ -34,13 +34,22 @@ function computeChainSnapshot(root: SdfNode, nodeId: NodeId) {
   };
 }
 
-/** Convert any legacy scaleUniform.params.scale `number` to `[s,s,s]`. */
+/** Migrate legacy fields: scaleUniform's `scale` was a number, kifs had
+ *  a single `rotY` float instead of a vec3 `rotation`. */
 function migrateNode(node: SdfNode): SdfNode {
   let n = node;
   if (n.kind === "transform" && n.type === "scaleUniform") {
     const v = n.params.scale;
     if (typeof v === "number") {
       n = { ...n, params: { ...n.params, scale: [v, v, v] } };
+    }
+  }
+  if (n.kind === "primitive" && n.type === "kifs") {
+    const params = n.params;
+    if (typeof params.rotY === "number" && !Array.isArray(params.rotation)) {
+      const next = { ...params, rotation: [0, params.rotY, 0] as [number, number, number] };
+      delete (next as Record<string, unknown>).rotY;
+      n = { ...n, params: next };
     }
   }
   if (n.kind === "transform" && n.child) {
