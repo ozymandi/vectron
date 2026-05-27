@@ -372,6 +372,8 @@ const MODE_TO_TRANSFORM_TYPE: Record<ModalMode, TransformType> = {
   scale: "scaleUniform",
 };
 
+const MAX_HISTORY = 100;
+
 type StoreState = {
   root: SdfNode | null;
   selectedId: NodeId | null;
@@ -379,6 +381,11 @@ type StoreState = {
   modalMode: ModalMode | null; // null = no modal; non-null = armed or active
   modalState: ModalState | null; // non-null = active (mouse moved)
   collapsedIds: Record<NodeId, boolean>;
+  history: (SdfNode | null)[]; // past roots, oldest first
+  future: (SdfNode | null)[]; // redo roots, oldest first
+  // Snapshot captured at modal activation; pushed to history on confirm,
+  // discarded on cancel. Undefined when no modal is in flight.
+  pendingUndoSnapshot: SdfNode | null | undefined;
 
   selectNode: (id: NodeId | null) => void;
   addPrimitive: (type: PrimitiveType) => void;
@@ -416,18 +423,37 @@ type StoreState = {
   // Serialization
   loadTree: (tree: SdfNode | null) => void;
   serializeTree: () => string;
+  // History
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
 };
 
-export const useStore = create<StoreState>((set, get) => ({
+export const useStore = create<StoreState>((set, get) => {
+  // Capture current root into the history stack, clear redo stack.
+  // Call BEFORE applying any user-initiated mutation that should be undoable.
+  // Skip for modal-driven mutations (handled separately via pendingUndoSnapshot).
+  const recordUndo = () => {
+    const s = get();
+    const history = [...s.history, s.root].slice(-MAX_HISTORY);
+    set({ history, future: [] });
+  };
+
+  return {
   root: null,
   selectedId: null,
   dragSource: null,
   modalMode: null,
   modalState: null,
   collapsedIds: {},
+  history: [],
+  future: [],
+  pendingUndoSnapshot: undefined,
 
   selectNode: (id) => set({ selectedId: id }),
-  reset: () =>
+  reset: () => {
+    recordUndo();
     set({
       root: null,
       selectedId: null,
@@ -435,12 +461,14 @@ export const useStore = create<StoreState>((set, get) => ({
       modalMode: null,
       modalState: null,
       collapsedIds: {},
-    }),
+    });
+  },
 
   addPrimitive: (type) => {
     const { root, selectedId } = get();
     const prim = makePrimitive(type);
     if (!root) {
+      recordUndo();
       set({ root: prim, selectedId: prim.id });
       return;
     }
@@ -448,6 +476,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const found = findById(root, selectedId);
     if (!found) return;
     const target = found.node;
+    recordUndo();
     if (target.kind === "boolean") {
       const updated = { ...target, children: [...target.children, prim] };
       set({ root: found.update(updated), selectedId: prim.id });
@@ -462,17 +491,20 @@ export const useStore = create<StoreState>((set, get) => ({
   addTransform: (type) => {
     const { root, selectedId } = get();
     if (!root) {
+      recordUndo();
       const wrap = makeTransform(type, null);
       set({ root: wrap, selectedId: wrap.id });
       return;
     }
     if (!selectedId) {
+      recordUndo();
       const wrap = makeTransform(type, root);
       set({ root: wrap, selectedId: wrap.id });
       return;
     }
     const found = findById(root, selectedId);
     if (!found) return;
+    recordUndo();
     const wrap = makeTransform(type, found.node);
     set({ root: found.update(wrap), selectedId: wrap.id });
   },
@@ -480,11 +512,13 @@ export const useStore = create<StoreState>((set, get) => ({
   addBoolean: (type) => {
     const { root, selectedId } = get();
     if (!root) {
+      recordUndo();
       const b = makeBoolean(type, []);
       set({ root: b, selectedId: b.id });
       return;
     }
     if (!selectedId) {
+      recordUndo();
       const sphere = makePrimitive("sphere");
       const b = makeBoolean(type, [root, sphere]);
       set({ root: b, selectedId: b.id });
@@ -492,6 +526,7 @@ export const useStore = create<StoreState>((set, get) => ({
     }
     const found = findById(root, selectedId);
     if (!found) return;
+    recordUndo();
     const sphere = makePrimitive("sphere");
     const b = makeBoolean(type, [found.node, sphere]);
     set({ root: found.update(b), selectedId: b.id });
@@ -500,6 +535,7 @@ export const useStore = create<StoreState>((set, get) => ({
   removeNode: (id) => {
     const { root } = get();
     if (!root) return;
+    recordUndo();
 
     // Replacement node for a removed `node`, preserving children when possible.
     // For booleans with 2+ children, parentBoolType is used to decide whether
@@ -564,6 +600,7 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!root) return;
     const found = findById(root, id);
     if (!found) return;
+    recordUndo();
     const updated = { ...found.node, enabled: !found.node.enabled };
     set({ root: found.update(updated) });
   },
@@ -577,6 +614,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const newSpec = getSpec(newType);
     if (!newSpec || newSpec.kind !== node.kind) return;
     if (newType === node.type) return;
+    recordUndo();
 
     let updated: SdfNode;
     if (node.kind === "primitive") {
@@ -595,6 +633,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const found = findById(root, id);
     if (!found) return;
     const node = found.node;
+    recordUndo();
     const updated = { ...node, params: { ...node.params, [key]: value } } as SdfNode;
     set({ root: found.update(updated) });
   },
@@ -604,6 +643,7 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!root) return;
     const found = findById(root, id);
     if (!found || found.node.kind !== "primitive") return;
+    recordUndo();
     const updated = { ...found.node, matId: Math.max(0, Math.round(matId)) };
     set({ root: found.update(updated) });
   },
@@ -647,6 +687,7 @@ export const useStore = create<StoreState>((set, get) => ({
       return false;
     }
 
+    recordUndo();
     let source: SdfNode;
     let workingRoot: SdfNode | null = root;
 
@@ -778,6 +819,7 @@ export const useStore = create<StoreState>((set, get) => ({
     set({
       root: workingRoot,
       selectedId: targetId,
+      pendingUndoSnapshot: root, // pre-modal root; pushed to history on confirm
       modalState: {
         mode,
         nodeId: targetId,
@@ -820,7 +862,19 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   confirmModal: () => {
-    set({ modalMode: null, modalState: null });
+    const { pendingUndoSnapshot, history } = get();
+    if (pendingUndoSnapshot !== undefined) {
+      const newHistory = [...history, pendingUndoSnapshot].slice(-MAX_HISTORY);
+      set({
+        history: newHistory,
+        future: [],
+        pendingUndoSnapshot: undefined,
+        modalMode: null,
+        modalState: null,
+      });
+    } else {
+      set({ modalMode: null, modalState: null });
+    }
   },
 
   duplicateSelected: () => {
@@ -828,6 +882,7 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!state.root || !state.selectedId) return;
     const found = findById(state.root, state.selectedId);
     if (!found) return;
+    recordUndo();
     const clone = cloneNode(found.node);
 
     const parent = findParentOf(state.root, state.selectedId);
@@ -858,9 +913,11 @@ export const useStore = create<StoreState>((set, get) => ({
 
   loadTree: (tree) => {
     if (!tree) {
+      recordUndo();
       set({ root: null, selectedId: null, collapsedIds: {} });
       return;
     }
+    recordUndo();
     // Migrate any legacy fields, then deep-clone with new IDs so we don't
     // collide with the current tree.
     const fresh = cloneNode(migrateNode(tree));
@@ -895,6 +952,7 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!ancestor) return false;
     const found = findById(state.root, ancestor.id);
     if (!found) return false;
+    recordUndo();
     const defaults = defaultParams(targetType);
     const updated = {
       ...found.node,
@@ -907,7 +965,7 @@ export const useStore = create<StoreState>((set, get) => ({
   cancelModal: () => {
     const m = get().modalState;
     if (!m) {
-      set({ modalMode: null });
+      set({ modalMode: null, pendingUndoSnapshot: undefined });
       return;
     }
     if (m.createdByModal && m.originalRoot) {
@@ -916,13 +974,14 @@ export const useStore = create<StoreState>((set, get) => ({
         selectedId: m.originalSelectedId,
         modalMode: null,
         modalState: null,
+        pendingUndoSnapshot: undefined,
       });
       return;
     }
     // Restore params only.
     const { root } = get();
     if (!root) {
-      set({ modalMode: null, modalState: null });
+      set({ modalMode: null, modalState: null, pendingUndoSnapshot: undefined });
       return;
     }
     const found = findById(root, m.nodeId);
@@ -936,9 +995,10 @@ export const useStore = create<StoreState>((set, get) => ({
         selectedId: m.originalSelectedId,
         modalMode: null,
         modalState: null,
+        pendingUndoSnapshot: undefined,
       });
     } else {
-      set({ modalMode: null, modalState: null });
+      set({ modalMode: null, modalState: null, pendingUndoSnapshot: undefined });
     }
   },
 
@@ -952,11 +1012,52 @@ export const useStore = create<StoreState>((set, get) => ({
       set({ dragSource: null });
       return false;
     }
+    recordUndo();
     const node = createFromLibrary(dragSource.specType, dragSource.specKind);
     set({ root: node, selectedId: node.id, dragSource: null });
     return true;
   },
-}));
+
+  // --- history ---
+
+  undo: () => {
+    const { history, future, root } = get();
+    if (history.length === 0) return;
+    const prev = history[history.length - 1];
+    const newHistory = history.slice(0, -1);
+    const newFuture = [...future, root];
+    set({
+      root: prev,
+      history: newHistory,
+      future: newFuture,
+      selectedId: null,
+      modalMode: null,
+      modalState: null,
+      dragSource: null,
+    });
+  },
+
+  redo: () => {
+    const { history, future, root } = get();
+    if (future.length === 0) return;
+    const next = future[future.length - 1];
+    const newFuture = future.slice(0, -1);
+    const newHistory = [...history, root];
+    set({
+      root: next,
+      history: newHistory,
+      future: newFuture,
+      selectedId: null,
+      modalMode: null,
+      modalState: null,
+      dragSource: null,
+    });
+  },
+
+  canUndo: () => get().history.length > 0,
+  canRedo: () => get().future.length > 0,
+  };
+});
 
 export function getLabel(type: string): string {
   if (type in PRIMITIVES) return PRIMITIVES[type as PrimitiveType].spec.label;

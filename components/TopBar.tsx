@@ -13,6 +13,10 @@ export function TopBar() {
   const reset = useStore((s) => s.reset);
   const loadTree = useStore((s) => s.loadTree);
   const serializeTree = useStore((s) => s.serializeTree);
+  const undo = useStore((s) => s.undo);
+  const redo = useStore((s) => s.redo);
+  const historyLen = useStore((s) => s.history.length);
+  const futureLen = useStore((s) => s.future.length);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [presetsOpen, setPresetsOpen] = useState(false);
 
@@ -118,6 +122,18 @@ export function TopBar() {
         </span>
       </div>
       <nav className="flex items-center gap-1">
+        <ToolbarButton
+          label="↶"
+          title="Undo (Ctrl+Z)"
+          onClick={undo}
+          disabled={historyLen === 0}
+        />
+        <ToolbarButton
+          label="↷"
+          title="Redo (Ctrl+Shift+Z)"
+          onClick={redo}
+          disabled={futureLen === 0}
+        />
         <ToolbarButton label="New" onClick={handleNew} />
         <div className="relative" data-preset-menu>
           <ToolbarButton
@@ -172,17 +188,23 @@ function ToolbarButton({
   label,
   primary,
   onClick,
+  disabled,
+  title,
 }: {
   label: string;
   primary?: boolean;
   onClick: () => void;
+  disabled?: boolean;
+  title?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
+      title={title}
       className={
-        "px-3 py-1.5 text-[11px] rounded-sm border transition-colors " +
+        "px-3 py-1.5 text-[11px] rounded-sm border transition-colors disabled:opacity-30 disabled:cursor-not-allowed " +
         (primary
           ? "bg-primary border-primary text-primary-foreground hover:bg-primary-hover"
           : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:border-border-strong")

@@ -692,8 +692,23 @@ export function PreviewPanel() {
       const key = e.key.toLowerCase();
 
       // Modal not active and not armed: G / R / S activate modals;
-      // Alt+G/R/S reset; Shift+D duplicate; Delete / Backspace removes.
+      // Alt+G/R/S reset; Shift+D duplicate; Delete / Backspace removes;
+      // Ctrl+Z undo, Ctrl+Shift+Z or Ctrl+Y redo.
       if (!mode) {
+        // Undo / Redo work even without a selection.
+        if ((e.ctrlKey || e.metaKey) && key === "z" && !e.shiftKey) {
+          e.preventDefault();
+          state.undo();
+          return;
+        }
+        if (
+          (e.ctrlKey || e.metaKey) &&
+          (key === "y" || (e.shiftKey && key === "z"))
+        ) {
+          e.preventDefault();
+          state.redo();
+          return;
+        }
         if (!state.selectedId) return;
         if (e.key === "Delete" || e.key === "Backspace") {
           e.preventDefault();
