@@ -749,15 +749,15 @@ export const PRIMITIVES: Record<PrimitiveType, PrimitiveDef> = {
     float mz2 = qx * qx + qy * qy + qz * qz + qw * qw;
     for (int i = 0; i < iterations; i = i + 1) {
         md2 = md2 * 4.0 * mz2;
-        // q = q*q + c, with q*q for quaternion (treating real q with imaginary parts xy z)
-        float nw = qw * qw - qx * qx - qy * qy - qz * qz;
-        float nx = 2.0 * qw * qx;
-        float ny = 2.0 * qw * qy;
-        float nz = 2.0 * qw * qz;
-        qw = nw + c_w;
+        // q = q*q + c, quaternion square with qx as the real part.
+        float nx = qx * qx - qy * qy - qz * qz - qw * qw;
+        float ny = 2.0 * qx * qy;
+        float nz = 2.0 * qx * qz;
+        float nw = 2.0 * qx * qw;
         qx = nx + c[0];
         qy = ny + c[1];
         qz = nz + c[2];
+        qw = nw + c_w;
         mz2 = qx * qx + qy * qy + qz * qz + qw * qw;
         if (mz2 > bailout) break;
     }

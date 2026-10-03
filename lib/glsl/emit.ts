@@ -1,5 +1,6 @@
 import { buildParts } from "../osl/emit";
 import { BOOLEANS, PRIMITIVES, TRANSFORMS } from "../osl/registry";
+import { f, getFloat } from "../osl/registry/util";
 import type { NodeId, PrimitiveType, SdfNode } from "../types";
 
 /**
@@ -177,10 +178,6 @@ type PickCtx = {
   idMap: Map<number, NodeId>;
 };
 
-function formatGlslFloat(s: string): string {
-  return s;
-}
-
 function walkPicking(
   node: SdfNode,
   currentPoint: string,
@@ -257,9 +254,7 @@ function walkPicking(
     const b = childHits[i];
     const v = `h${++ctx.hit}`;
     let expr: string;
-    const k = formatGlslFloat(
-      String(typeof node.params.k === "number" ? node.params.k : 0.2),
-    );
+    const k = f(getFloat(node.params, "k", 0.2));
     switch (node.type) {
       case "union":
         expr = `hit_min(${a}, ${b})`;

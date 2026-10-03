@@ -26,7 +26,7 @@ export function NumberInput({
     if (!Number.isFinite(n)) n = value;
     if (typeof min === "number") n = Math.max(min, n);
     if (typeof max === "number") n = Math.min(max, n);
-    onChange(n);
+    if (n !== value) onChange(n);
     setDraft(String(n));
   };
 

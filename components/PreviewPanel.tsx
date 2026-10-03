@@ -35,6 +35,7 @@ type GLState = {
 };
 
 type PickState = {
+  root: SdfNode | null; // tree this program was built for
   program: WebGLProgram;
   uRes: WebGLUniformLocation | null;
   uEye: WebGLUniformLocation | null;
@@ -343,6 +344,16 @@ function computeModalParams(
   return {};
 }
 
+// Latin letter for the pressed key. Uses `e.key` when it already is one
+// (respects AZERTY / Dvorak), otherwise falls back to the physical key so
+// shortcuts keep working on non-Latin layouts (e.g. Ukrainian).
+function keyLetter(e: KeyboardEvent): string {
+  const k = e.key.toLowerCase();
+  if (k.length === 1 && k >= "a" && k <= "z") return k;
+  if (e.code.startsWith("Key")) return e.code.slice(3).toLowerCase();
+  return k;
+}
+
 // --- Component -------------------------------------------------------------
 
 export function PreviewPanel() {
@@ -352,7 +363,10 @@ export function PreviewPanel() {
   const modalState = useStore((s) => s.modalState);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dotRef = useRef<SVGCircleElement | null>(null);
+  const glRef = useRef<WebGL2RenderingContext | null>(null);
   const glStateRef = useRef<GLState | null>(null);
+  // Tree the preview program was last built for (undefined = never built).
+  const compiledRootRef = useRef<SdfNode | null | undefined>(undefined);
   const pickStateRef = useRef<PickState | null>(null);
   const cameraRef = useRef({ yaw: 0.6, pitch: 0.45, distance: 5 });
   const rafRef = useRef<number | null>(null);
@@ -362,82 +376,41 @@ export function PreviewPanel() {
   selectedIdRef.current = selectedId;
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  // Click-to-pick: render the picking shader to an offscreen FBO and read
+  // the pixel at the click position to identify the primitive node id.
+  const pickAt = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const gl = glRef.current;
+    if (!canvas || !gl) return null;
 
-    let gl = glStateRef.current?.gl;
-    if (!gl) {
-      const ctx = canvas.getContext("webgl2", { antialias: true, alpha: false });
-      if (!ctx) {
-        setError("WebGL2 not supported in this browser.");
-        return;
+    // The picking program is built lazily, on the first click after the
+    // tree changed, so param edits don't pay for a second shader compile.
+    const curRoot = rootRef.current;
+    let pick = pickStateRef.current;
+    if (!pick || pick.root !== curRoot) {
+      const pickSrc = buildPickingProgram(curRoot);
+      const pickProg = buildProgram(gl, pickSrc.vs, pickSrc.fs);
+      if ("error" in pickProg) {
+        // Picking is best-effort; log but don't surface as user-facing error.
+        console.error("Picking shader build failed:", pickProg.error);
+        return null;
       }
-      gl = ctx;
-      const vbo = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-      gl.bufferData(
-        gl.ARRAY_BUFFER,
-        new Float32Array([-1, -1, 3, -1, -1, 3]),
-        gl.STATIC_DRAW,
-      );
-      gl.enableVertexAttribArray(0);
-      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-    }
-
-    const { vs, fs } = buildPreviewProgram(root);
-    const result = buildProgram(gl, vs, fs);
-    if ("error" in result) {
-      setError(result.error);
-      return;
-    }
-    setError(null);
-
-    if (glStateRef.current?.program) {
-      gl.deleteProgram(glStateRef.current.program);
-    }
-    glStateRef.current = {
-      gl,
-      program: result,
-      uRes: gl.getUniformLocation(result, "u_res"),
-      uEye: gl.getUniformLocation(result, "u_eye"),
-      uTarget: gl.getUniformLocation(result, "u_target"),
-      uUp: gl.getUniformLocation(result, "u_up"),
-    };
-
-    // Picking program (built alongside main).
-    const pickSrc = buildPickingProgram(root);
-    const pickProg = buildProgram(gl, pickSrc.vs, pickSrc.fs);
-    if ("error" in pickProg) {
-      // Picking is best-effort; log but don't surface as user-facing error.
-      console.error("Picking shader build failed:", pickProg.error);
-    } else {
-      if (pickStateRef.current?.program) {
-        gl.deleteProgram(pickStateRef.current.program);
-      }
-      pickStateRef.current = {
+      if (pick) gl.deleteProgram(pick.program);
+      pick = {
+        root: curRoot,
         program: pickProg,
         uRes: gl.getUniformLocation(pickProg, "u_res"),
         uEye: gl.getUniformLocation(pickProg, "u_eye"),
         uTarget: gl.getUniformLocation(pickProg, "u_target"),
         uUp: gl.getUniformLocation(pickProg, "u_up"),
         idMap: pickSrc.idMap,
-        fbo: pickStateRef.current?.fbo ?? null,
-        fboTex: pickStateRef.current?.fboTex ?? null,
-        fboW: pickStateRef.current?.fboW ?? 0,
-        fboH: pickStateRef.current?.fboH ?? 0,
+        fbo: pick?.fbo ?? null,
+        fboTex: pick?.fboTex ?? null,
+        fboW: pick?.fboW ?? 0,
+        fboH: pick?.fboH ?? 0,
       };
+      pickStateRef.current = pick;
     }
-  }, [root]);
-
-  // Click-to-pick: render the picking shader to an offscreen FBO and read
-  // the pixel at the click position to identify the primitive node id.
-  const pickAt = (clientX: number, clientY: number) => {
-    const canvas = canvasRef.current;
-    const glState = glStateRef.current;
-    const pick = pickStateRef.current;
-    if (!canvas || !glState || !pick) return null;
-    const gl = glState.gl;
 
     const rect = canvas.getBoundingClientRect();
     const cssW = canvas.clientWidth;
@@ -513,13 +486,54 @@ export function PreviewPanel() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    const gl = canvas.getContext("webgl2", { antialias: true, alpha: false });
+    if (!gl) {
+      setError("WebGL2 not supported in this browser.");
+      return;
+    }
+    glRef.current = gl;
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 3, -1, -1, 3]),
+      gl.STATIC_DRAW,
+    );
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+    // Rebuild the preview program when the tree changed since the last
+    // build. Called from the render loop, so at most once per frame.
+    const syncProgram = () => {
+      const r = rootRef.current;
+      if (compiledRootRef.current === r) return;
+      compiledRootRef.current = r;
+      const { vs, fs } = buildPreviewProgram(r);
+      const result = buildProgram(gl, vs, fs);
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
+      setError(null);
+      if (glStateRef.current) gl.deleteProgram(glStateRef.current.program);
+      glStateRef.current = {
+        gl,
+        program: result,
+        uRes: gl.getUniformLocation(result, "u_res"),
+        uEye: gl.getUniformLocation(result, "u_eye"),
+        uTarget: gl.getUniformLocation(result, "u_target"),
+        uUp: gl.getUniformLocation(result, "u_up"),
+      };
+    };
+
     const render = () => {
+      syncProgram();
       const st = glStateRef.current;
       if (!st) {
         rafRef.current = requestAnimationFrame(render);
         return;
       }
-      const { gl, program, uRes, uEye, uTarget, uUp } = st;
+      const { program, uRes, uEye, uTarget, uUp } = st;
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const cssW = canvas.clientWidth;
@@ -689,22 +703,20 @@ export function PreviewPanel() {
       const state = useStore.getState();
       const m = state.modalState;
       const mode = state.modalMode;
-      const key = e.key.toLowerCase();
+      const key = keyLetter(e);
+      const cmd = e.ctrlKey || e.metaKey;
 
       // Modal not active and not armed: G / R / S activate modals;
       // Alt+G/R/S reset; Shift+D duplicate; Delete / Backspace removes;
       // Ctrl+Z undo, Ctrl+Shift+Z or Ctrl+Y redo.
       if (!mode) {
         // Undo / Redo work even without a selection.
-        if ((e.ctrlKey || e.metaKey) && key === "z" && !e.shiftKey) {
+        if (cmd && key === "z" && !e.shiftKey) {
           e.preventDefault();
           state.undo();
           return;
         }
-        if (
-          (e.ctrlKey || e.metaKey) &&
-          (key === "y" || (e.shiftKey && key === "z"))
-        ) {
+        if (cmd && (key === "y" || (e.shiftKey && key === "z"))) {
           e.preventDefault();
           state.redo();
           return;
@@ -715,6 +727,8 @@ export function PreviewPanel() {
           state.removeNode(state.selectedId);
           return;
         }
+        // Leave browser shortcuts (Ctrl+R, Ctrl+S, ...) alone.
+        if (cmd) return;
         if (e.shiftKey && key === "d") {
           e.preventDefault();
           state.duplicateSelected();

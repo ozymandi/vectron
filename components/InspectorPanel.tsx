@@ -24,6 +24,7 @@ function findById(root: SdfNode | null, id: string): SdfNode | null {
 
 const CATEGORY_ORDER = [
   "Primitives",
+  "Fractals",
   "Booleans",
   "Transforms",
   "Repetition",

@@ -23,6 +23,7 @@ import {
   computeParentTransform,
   identity3,
 } from "./preview/projection";
+import { sanitizeTree } from "./sanitize";
 
 function computeChainSnapshot(root: SdfNode, nodeId: NodeId) {
   const chainOrigin = computeChainOrigin(root, nodeId) ?? [0, 0, 0];
@@ -32,39 +33,6 @@ function computeChainSnapshot(root: SdfNode, nodeId: NodeId) {
     parentRotation: pt?.rotation ?? identity3(),
     parentScale: (pt?.scale ?? [1, 1, 1]) as [number, number, number],
   };
-}
-
-/** Migrate legacy fields: scaleUniform's `scale` was a number, kifs had
- *  a single `rotY` float instead of a vec3 `rotation`. */
-function migrateNode(node: SdfNode): SdfNode {
-  let n = node;
-  if (n.kind === "transform" && n.type === "scaleUniform") {
-    const v = n.params.scale;
-    if (typeof v === "number") {
-      n = { ...n, params: { ...n.params, scale: [v, v, v] } };
-    }
-  }
-  if (n.kind === "primitive" && n.type === "kifs") {
-    const params = n.params;
-    if (typeof params.rotY === "number" && !Array.isArray(params.rotation)) {
-      const next = { ...params, rotation: [0, params.rotY, 0] as [number, number, number] };
-      delete (next as Record<string, unknown>).rotY;
-      n = { ...n, params: next };
-    }
-  }
-  if (n.kind === "transform" && n.child) {
-    const migrated = migrateNode(n.child);
-    if (migrated !== n.child) n = { ...n, child: migrated };
-  } else if (n.kind === "boolean") {
-    let changed = false;
-    const newChildren = n.children.map((c) => {
-      const m = migrateNode(c);
-      if (m !== c) changed = true;
-      return m;
-    });
-    if (changed) n = { ...n, children: newChildren };
-  }
-  return n;
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -124,6 +92,13 @@ function cloneNode(node: SdfNode): SdfNode {
     params: { ...node.params },
     children: node.children.map(cloneNode),
   };
+}
+
+function sameParam(a: ParamValue | undefined, b: ParamValue): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+  }
+  return a === b;
 }
 
 function createFromLibrary(specType: string, specKind: NodeKind): SdfNode {
@@ -421,7 +396,8 @@ type StoreState = {
   // Tree collapse/expand
   toggleCollapsed: (id: NodeId) => void;
   // Serialization
-  loadTree: (tree: SdfNode | null) => void;
+  // `undoable: false` skips the history entry (restore on page load).
+  loadTree: (tree: SdfNode | null, opts?: { undoable?: boolean }) => void;
   serializeTree: () => string;
   // History
   undo: () => void;
@@ -633,6 +609,7 @@ export const useStore = create<StoreState>((set, get) => {
     const found = findById(root, id);
     if (!found) return;
     const node = found.node;
+    if (sameParam(node.params[key], value)) return;
     recordUndo();
     const updated = { ...node, params: { ...node.params, [key]: value } } as SdfNode;
     set({ root: found.update(updated) });
@@ -643,8 +620,10 @@ export const useStore = create<StoreState>((set, get) => {
     if (!root) return;
     const found = findById(root, id);
     if (!found || found.node.kind !== "primitive") return;
+    const next = Math.max(0, Math.round(matId));
+    if ((found.node.matId ?? 0) === next) return;
     recordUndo();
-    const updated = { ...found.node, matId: Math.max(0, Math.round(matId)) };
+    const updated = { ...found.node, matId: next };
     set({ root: found.update(updated) });
   },
 
@@ -911,16 +890,20 @@ export const useStore = create<StoreState>((set, get) => {
     set({ root: found.update(union), selectedId: clone.id });
   },
 
-  loadTree: (tree) => {
+  loadTree: (tree, opts) => {
+    const undoable = opts?.undoable ?? true;
     if (!tree) {
-      recordUndo();
+      if (undoable) recordUndo();
       set({ root: null, selectedId: null, collapsedIds: {} });
       return;
     }
-    recordUndo();
-    // Migrate any legacy fields, then deep-clone with new IDs so we don't
-    // collide with the current tree.
-    const fresh = cloneNode(migrateNode(tree));
+    // Validate against the registry (drops unknown nodes, migrates legacy
+    // fields), then deep-clone with new IDs so we don't collide with the
+    // current tree.
+    const clean = sanitizeTree(tree);
+    if (!clean) return;
+    if (undoable) recordUndo();
+    const fresh = cloneNode(clean);
     set({
       root: fresh,
       selectedId: fresh.id,

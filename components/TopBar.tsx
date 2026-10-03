@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import { emitOSL } from "@/lib/osl/emit";
 import { PRESETS } from "@/lib/presets";
+import { sanitizeTree } from "@/lib/sanitize";
 import type { SdfNode } from "@/lib/types";
 
 const STORAGE_KEY = "vectron-formula-gen.tree";
@@ -20,8 +21,15 @@ export function TopBar() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [presetsOpen, setPresetsOpen] = useState(false);
 
-  // Auto-save current tree to localStorage on change.
+  // Auto-save current tree to localStorage on change. The mount pass is
+  // skipped: `root` is still empty there, and saving it would wipe the stored
+  // tree before the restore effect below gets to read it.
+  const skipSaveRef = useRef(true);
   useEffect(() => {
+    if (skipSaveRef.current) {
+      skipSaveRef.current = false;
+      return;
+    }
     try {
       if (root) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(root));
@@ -40,7 +48,7 @@ export function TopBar() {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw) as SdfNode;
-      loadTree(parsed);
+      loadTree(parsed, { undoable: false });
     } catch {
       // corrupt JSON — drop silently
     }
@@ -87,13 +95,13 @@ export function TopBar() {
     if (!file) return;
     try {
       const text = await file.text();
-      const parsed = JSON.parse(text) as SdfNode;
-      if (!parsed || typeof parsed !== "object" || !("kind" in parsed)) {
+      const tree = sanitizeTree(JSON.parse(text));
+      if (!tree) {
         alert("Invalid tree file.");
         return;
       }
       if (root && !confirm("Replace the current tree?")) return;
-      loadTree(parsed);
+      loadTree(tree);
     } catch (err) {
       alert("Failed to load: " + (err as Error).message);
     }
