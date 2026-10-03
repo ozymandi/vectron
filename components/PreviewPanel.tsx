@@ -32,6 +32,7 @@ type GLState = {
   uEye: WebGLUniformLocation | null;
   uTarget: WebGLUniformLocation | null;
   uUp: WebGLUniformLocation | null;
+  uGrid: WebGLUniformLocation | null;
 };
 
 type PickState = {
@@ -354,6 +355,29 @@ function keyLetter(e: KeyboardEvent): string {
   return k;
 }
 
+// --- Camera ----------------------------------------------------------------
+
+type Camera = { yaw: number; pitch: number; distance: number; target: Vec3 };
+
+const defaultCamera = (): Camera => ({
+  yaw: 0.6,
+  pitch: 0.45,
+  distance: 5,
+  target: [0, 0, 0],
+});
+
+const PITCH_LIMIT = Math.PI / 2 - 0.02;
+const WORLD_UP: Vec3 = [0, 1, 0];
+
+function cameraEye(cam: Camera): Vec3 {
+  const o = orbitEye(cam.yaw, cam.pitch, cam.distance);
+  return [cam.target[0] + o[0], cam.target[1] + o[1], cam.target[2] + o[2]];
+}
+
+function clampDistance(d: number): number {
+  return Math.max(0.5, Math.min(80, d));
+}
+
 // --- Component -------------------------------------------------------------
 
 export function PreviewPanel() {
@@ -368,7 +392,9 @@ export function PreviewPanel() {
   // Tree the preview program was last built for (undefined = never built).
   const compiledRootRef = useRef<SdfNode | null | undefined>(undefined);
   const pickStateRef = useRef<PickState | null>(null);
-  const cameraRef = useRef({ yaw: 0.6, pitch: 0.45, distance: 5 });
+  const cameraRef = useRef<Camera>(defaultCamera());
+  const [gridOn, setGridOn] = useState(true);
+  const gridOnRef = useRef(true);
   const rafRef = useRef<number | null>(null);
   const rootRef = useRef<SdfNode | null>(root);
   rootRef.current = root;
@@ -460,10 +486,12 @@ export function PreviewPanel() {
     gl.useProgram(pick.program);
 
     const cam = cameraRef.current;
-    const eye = orbitEye(cam.yaw, cam.pitch, cam.distance);
+    const eye = cameraEye(cam);
     if (pick.uRes) gl.uniform2f(pick.uRes, w, h);
     if (pick.uEye) gl.uniform3f(pick.uEye, eye[0], eye[1], eye[2]);
-    if (pick.uTarget) gl.uniform3f(pick.uTarget, 0, 0, 0);
+    if (pick.uTarget) {
+      gl.uniform3f(pick.uTarget, cam.target[0], cam.target[1], cam.target[2]);
+    }
     if (pick.uUp) gl.uniform3f(pick.uUp, 0, 1, 0);
 
     gl.clearColor(0, 0, 0, 0);
@@ -523,6 +551,7 @@ export function PreviewPanel() {
         uEye: gl.getUniformLocation(result, "u_eye"),
         uTarget: gl.getUniformLocation(result, "u_target"),
         uUp: gl.getUniformLocation(result, "u_up"),
+        uGrid: gl.getUniformLocation(result, "u_grid"),
       };
     };
 
@@ -533,7 +562,7 @@ export function PreviewPanel() {
         rafRef.current = requestAnimationFrame(render);
         return;
       }
-      const { program, uRes, uEye, uTarget, uUp } = st;
+      const { program, uRes, uEye, uTarget, uUp, uGrid } = st;
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const cssW = canvas.clientWidth;
@@ -548,12 +577,15 @@ export function PreviewPanel() {
       gl.useProgram(program);
 
       const cam = cameraRef.current;
-      const eye = orbitEye(cam.yaw, cam.pitch, cam.distance);
+      const eye = cameraEye(cam);
 
       if (uRes) gl.uniform2f(uRes, w, h);
       if (uEye) gl.uniform3f(uEye, eye[0], eye[1], eye[2]);
-      if (uTarget) gl.uniform3f(uTarget, 0, 0, 0);
+      if (uTarget) {
+        gl.uniform3f(uTarget, cam.target[0], cam.target[1], cam.target[2]);
+      }
       if (uUp) gl.uniform3f(uUp, 0, 1, 0);
+      if (uGrid) gl.uniform1f(uGrid, gridOnRef.current ? 1 : 0);
 
       gl.clearColor(0.07, 0.08, 0.1, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
@@ -567,7 +599,7 @@ export function PreviewPanel() {
           const origin = computeChainOrigin(r, sel);
           if (origin) {
             const proj = projectWorldToScreen(
-              origin, eye, [0, 0, 0], [0, 1, 0], cssW, cssH,
+              origin, eye, cam.target, WORLD_UP, cssW, cssH,
             );
             if (proj.visible) {
               dot.setAttribute("cx", String(proj.x));
@@ -592,11 +624,14 @@ export function PreviewPanel() {
     };
   }, []);
 
-  // Camera orbit + click-to-pick.
+  // Camera navigation + click-to-pick. LMB or MMB drag orbits, Shift+drag
+  // pans, Ctrl+MMB drag zooms; an LMB click without a drag picks.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     let dragging = false;
+    let dragButton = 0;
+    let dragMode: "orbit" | "pan" | "zoom" = "orbit";
     let lastX = 0;
     let lastY = 0;
     let downX = 0;
@@ -609,7 +644,15 @@ export function PreviewPanel() {
 
     const onDown = (e: MouseEvent) => {
       if (inModal()) return;
-      if (e.button !== 0) return;
+      if (e.button !== 0 && e.button !== 1) return;
+      // Middle button: suppress the browser's autoscroll.
+      if (e.button === 1) e.preventDefault();
+      dragButton = e.button;
+      dragMode = e.shiftKey
+        ? "pan"
+        : e.button === 1 && (e.ctrlKey || e.metaKey)
+          ? "zoom"
+          : "orbit";
       dragging = true;
       lastX = e.clientX;
       lastY = e.clientY;
@@ -620,7 +663,7 @@ export function PreviewPanel() {
     const onUp = (e: MouseEvent) => {
       const wasDragging = dragging;
       dragging = false;
-      if (wasDragging && !didMove && !inModal()) {
+      if (wasDragging && dragButton === 0 && !didMove && !inModal()) {
         // Click without drag → pick.
         const nodeId = pickAtRef.current(e.clientX, e.clientY);
         if (nodeId) useStore.getState().selectNode(nodeId);
@@ -637,6 +680,29 @@ export function PreviewPanel() {
       const dy = e.clientY - lastY;
       lastX = e.clientX;
       lastY = e.clientY;
+
+      if (dragMode === "pan") {
+        // Move the orbit target in the view plane so the scene follows
+        // the cursor at the target's depth.
+        const cam = cameraRef.current;
+        const forward = normalize3(sub(cam.target, cameraEye(cam)));
+        const right = normalize3(cross(forward, WORLD_UP));
+        const up = cross(right, forward);
+        const k = (2 * cam.distance) / (FOCAL * canvas.clientHeight);
+        cam.target = [
+          cam.target[0] + (-right[0] * dx + up[0] * dy) * k,
+          cam.target[1] + (-right[1] * dx + up[1] * dy) * k,
+          cam.target[2] + (-right[2] * dx + up[2] * dy) * k,
+        ];
+        return;
+      }
+      if (dragMode === "zoom") {
+        cameraRef.current.distance = clampDistance(
+          cameraRef.current.distance * (1 + dy * 0.005),
+        );
+        return;
+      }
+
       cameraRef.current.yaw -= dx * 0.005;
       cameraRef.current.pitch += dy * 0.005;
 
@@ -672,9 +738,8 @@ export function PreviewPanel() {
       if (inModal()) return;
       e.preventDefault();
       const f = 1 + e.deltaY * 0.001;
-      cameraRef.current.distance = Math.max(
-        0.5,
-        Math.min(80, cameraRef.current.distance * f),
+      cameraRef.current.distance = clampDistance(
+        cameraRef.current.distance * f,
       );
     };
 
@@ -720,6 +785,38 @@ export function PreviewPanel() {
           e.preventDefault();
           state.redo();
           return;
+        }
+        // Numpad views (Blender-style): 1 front, 3 right, 7 top, with Ctrl
+        // the opposite side; 9 flips the view; "." centres the orbit on
+        // the selected node.
+        if (e.code.startsWith("Numpad")) {
+          const cam = cameraRef.current;
+          let handled = true;
+          if (e.code === "Numpad1") {
+            cam.yaw = cmd ? Math.PI : 0;
+            cam.pitch = 0;
+          } else if (e.code === "Numpad3") {
+            cam.yaw = cmd ? -Math.PI / 2 : Math.PI / 2;
+            cam.pitch = 0;
+          } else if (e.code === "Numpad7") {
+            cam.yaw = 0;
+            cam.pitch = cmd ? -PITCH_LIMIT : PITCH_LIMIT;
+          } else if (e.code === "Numpad9") {
+            cam.yaw += Math.PI;
+            cam.pitch = -cam.pitch;
+          } else if (e.code === "NumpadDecimal") {
+            const origin =
+              state.root && state.selectedId
+                ? computeChainOrigin(state.root, state.selectedId)
+                : null;
+            if (origin) cam.target = origin;
+          } else {
+            handled = false;
+          }
+          if (handled) {
+            e.preventDefault();
+            return;
+          }
         }
         if (!state.selectedId) return;
         if (e.key === "Delete" || e.key === "Backspace") {
@@ -784,12 +881,11 @@ export function PreviewPanel() {
         const canvas = canvasRef.current;
         if (!canvas) return;
         const cam = cameraRef.current;
-        const eye = orbitEye(cam.yaw, cam.pitch, cam.distance);
         state.activateModal({
           startMouseX: e.clientX,
           startMouseY: e.clientY,
-          cameraEye: eye,
-          cameraTarget: [0, 0, 0],
+          cameraEye: cameraEye(cam),
+          cameraTarget: [cam.target[0], cam.target[1], cam.target[2]],
           cameraUp: [0, 1, 0],
           canvasWidth: canvas.clientWidth,
           canvasHeight: canvas.clientHeight,
@@ -834,7 +930,12 @@ export function PreviewPanel() {
   }, []);
 
   const resetCamera = () => {
-    cameraRef.current = { yaw: 0.6, pitch: 0.45, distance: 5 };
+    cameraRef.current = defaultCamera();
+  };
+
+  const toggleGrid = () => {
+    gridOnRef.current = !gridOnRef.current;
+    setGridOn(gridOnRef.current);
   };
 
   // Detect ortho view label for status overlay. Re-evaluated every render.
@@ -912,13 +1013,28 @@ export function PreviewPanel() {
           {statusText}
         </div>
       )}
-      <button
-        type="button"
-        onClick={resetCamera}
-        className="absolute top-2 right-2 px-2 py-0.5 text-[10px] rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-border-strong bg-bg/70 backdrop-blur-sm transition-colors"
-      >
-        Reset view
-      </button>
+      <div className="absolute top-2 right-2 flex items-center gap-1">
+        <button
+          type="button"
+          onClick={toggleGrid}
+          title={gridOn ? "Hide grid" : "Show grid"}
+          className={
+            "px-2 py-0.5 text-[10px] rounded-sm border bg-bg/70 backdrop-blur-sm transition-colors " +
+            (gridOn
+              ? "border-primary text-primary"
+              : "border-border text-muted-foreground hover:text-foreground hover:border-border-strong")
+          }
+        >
+          Grid
+        </button>
+        <button
+          type="button"
+          onClick={resetCamera}
+          className="px-2 py-0.5 text-[10px] rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-border-strong bg-bg/70 backdrop-blur-sm transition-colors"
+        >
+          Reset view
+        </button>
+      </div>
       {error && (
         <div className="absolute bottom-2 left-2 right-2 px-2 py-1 rounded-sm bg-destructive/20 border border-destructive text-destructive text-[10px] font-mono whitespace-pre-wrap max-h-32 overflow-y-auto">
           {error}

@@ -48,9 +48,31 @@ uniform vec2 u_res;
 uniform vec3 u_eye;
 uniform vec3 u_target;
 uniform vec3 u_up;
+uniform float u_grid;
 `;
 
-const FS_BODY = `vec3 calcNormal(vec3 p, vec3 c) {
+const FS_BODY = `// Anti-aliased grid lines every "cell" units; w is the world-space
+// footprint of a pixel. Fades out once cells get close to pixel size.
+float gridLines(vec2 p, vec2 w, float cell) {
+    vec2 dq = max(w / cell, vec2(1e-6));
+    vec2 a = abs(fract(p / cell - 0.5) - 0.5) / dq;
+    float line = 1.0 - min(min(a.x, a.y), 1.0);
+    return line * (1.0 - smoothstep(0.15, 0.5, max(dq.x, dq.y)));
+}
+
+// Ground grid colour + opacity at point p = (x, z) of the y = 0 plane.
+vec4 groundGrid(vec2 p, vec2 w) {
+    vec3 col = vec3(0.55, 0.58, 0.66);
+    float a = max(gridLines(p, w, 1.0) * 0.22, gridLines(p, w, 10.0) * 0.5);
+    // z = 0 is the X axis (red), x = 0 is the Z axis (blue).
+    vec2 ax = 1.0 - min(abs(p) / max(w * 1.5, vec2(1e-6)), 1.0);
+    col = mix(col, vec3(0.9, 0.28, 0.32), ax.y);
+    col = mix(col, vec3(0.25, 0.5, 0.95), ax.x);
+    a = max(a, max(ax.x, ax.y) * 0.9);
+    return vec4(col, a);
+}
+
+vec3 calcNormal(vec3 p, vec3 c) {
     float e = 0.0008;
     vec3 dx = vec3(e, 0.0, 0.0);
     vec3 dy = vec3(0.0, e, 0.0);
@@ -72,6 +94,11 @@ void main() {
     vec3 rd = normalize(uv.x * right + uv.y * trueUp + 1.5 * forward);
     vec3 ro = u_eye;
     vec3 c = vec3(0.0);
+
+    // Ground plane hit; derivatives are taken here, outside any branch.
+    float tg = -ro.y / (abs(rd.y) > 1e-5 ? rd.y : 1e-5);
+    vec2 gp = ro.xz + rd.xz * tg;
+    vec2 gw = fwidth(gp);
 
     float t = 0.0;
     float hit = 0.0;
@@ -108,10 +135,17 @@ void main() {
         vec3 col = base * (ambient + lambert * 0.85) + vec3(0.6, 0.7, 0.9) * fresnel * 0.4;
         // Gamma-ish
         col = pow(col, vec3(0.85));
-        o_color = vec4(col, 1.0);
-    } else {
-        o_color = vec4(bg, 1.0);
+        bg = col;
     }
+
+    // Grid is hidden behind the surface and blended over it when in front.
+    if (u_grid > 0.5 && tg > 0.0 && (hit < 0.5 || tg < t)) {
+        vec4 g = groundGrid(gp, gw);
+        float camDist = length(u_eye - u_target);
+        g.a *= 1.0 - smoothstep(0.3, 1.0, tg / (10.0 * camDist + 10.0));
+        bg = mix(bg, g.rgb, g.a);
+    }
+    o_color = vec4(bg, 1.0);
 }
 `;
 
