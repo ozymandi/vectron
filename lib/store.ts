@@ -9,6 +9,7 @@ import type {
   ParamValue,
   PrimitiveType,
   SdfNode,
+  TransformNode,
   TransformType,
 } from "./types";
 import {
@@ -206,6 +207,41 @@ function pathFromRootTo(root: SdfNode, id: NodeId): SdfNode[] {
   }
   if (!dfs(root)) return [];
   return path;
+}
+
+const TRS_TYPES: TransformType[] = ["translate", "rotateEuler", "scaleUniform"];
+
+function isTrs(node: SdfNode | null): node is TransformNode {
+  return (
+    node !== null && node.kind === "transform" && TRS_TYPES.includes(node.type)
+  );
+}
+
+/** The run of consecutive Translate / Rotate / Scale transforms directly
+ *  above `id` (and below it, when `id` is itself one of them), outermost
+ *  first. `selIndex` is the position of `id` in the chain, or chain.length
+ *  when `id` is the content under it. `content` is what the chain wraps. */
+function trsChain(
+  root: SdfNode,
+  id: NodeId,
+): { chain: TransformNode[]; selIndex: number; content: SdfNode | null } | null {
+  const path = pathFromRootTo(root, id);
+  if (path.length === 0) return null;
+  const sel = path[path.length - 1];
+  const chain: TransformNode[] = [];
+  for (let i = path.length - 2; i >= 0; i--) {
+    const n = path[i];
+    if (!isTrs(n)) break;
+    chain.unshift(n);
+  }
+  const selIndex = chain.length;
+  if (!isTrs(sel)) return { chain, selIndex, content: sel };
+  let n: SdfNode | null = sel;
+  while (isTrs(n)) {
+    chain.push(n);
+    n = n.child;
+  }
+  return { chain, selIndex, content: n };
 }
 
 /** Walk from root to `id`, return the deepest ancestor (or self) of the
@@ -728,56 +764,51 @@ export const useStore = create<StoreState>((set, get) => {
     let targetId: NodeId;
     let createdByModal: boolean;
 
-    // For rotate/scale: insert/reuse INSIDE the deepest Translate ancestor so
-    // the pivot is the chain origin (visual centre), not the world origin.
-    // For grab: wrap the selected node directly (a new Translate IS the move).
-    let anchorTranslate: SdfNode | null = null;
-    if (mode === "rotate" || mode === "scale") {
-      const path = pathFromRootTo(root, selectedId);
-      for (let i = path.length - 1; i >= 0; i--) {
-        const n = path[i];
-        if (n.kind === "transform" && n.type === "translate") {
-          anchorTranslate = n;
-          break;
-        }
+    // Work on the selected node's T/R/S chain: reuse the transform of the
+    // right type if the chain already has one, otherwise insert a single new
+    // one so the chain stays Translate -> Rotate -> Scale -> content. Rotate
+    // and Scale sit inside Translate so their pivot is the chain origin
+    // (visual centre), not the world origin.
+    const trs = trsChain(root, selectedId);
+    if (!trs) {
+      set({ modalMode: null });
+      return;
+    }
+    const { chain, selIndex, content } = trs;
+
+    let existing: TransformNode | null = null;
+    let bestDist = Infinity;
+    for (let i = 0; i < chain.length; i++) {
+      const dist = Math.abs(i - selIndex);
+      if (chain[i].type === targetType && dist < bestDist) {
+        existing = chain[i];
+        bestDist = dist;
       }
     }
 
-    if (
-      anchorTranslate &&
-      anchorTranslate.kind === "transform" &&
-      anchorTranslate.child &&
-      anchorTranslate.child.kind === "transform" &&
-      anchorTranslate.child.type === targetType
-    ) {
-      // Reuse existing transform of the right type already inside the anchor.
-      targetId = anchorTranslate.child.id;
-      createdByModal = false;
-    } else if (anchorTranslate && anchorTranslate.kind === "transform") {
-      // Insert new transform between the anchor Translate and its current child.
-      const newWrap = makeTransform(targetType, anchorTranslate.child);
-      const anchorFound = findById(root, anchorTranslate.id);
-      if (!anchorFound) {
-        set({ modalMode: null });
-        return;
-      }
-      const anchorUpdated = {
-        ...anchorFound.node,
-        child: newWrap,
-      } as SdfNode;
-      workingRoot = anchorFound.update(anchorUpdated);
-      targetId = newWrap.id;
-      createdByModal = true;
-    } else if (
-      found.node.kind === "transform" &&
-      found.node.type === targetType
-    ) {
-      targetId = found.node.id;
+    if (existing) {
+      targetId = existing.id;
       createdByModal = false;
     } else {
-      // No Translate ancestor (or mode === grab): wrap selected directly.
-      const wrap = makeTransform(targetType, found.node);
-      workingRoot = found.update(wrap);
+      // Chain index the new transform takes; chain.length = just above content.
+      let insertAt: number;
+      if (mode === "grab") {
+        insertAt = 0;
+      } else if (mode === "rotate") {
+        insertAt = chain.map((n) => n.type).lastIndexOf("translate") + 1;
+      } else {
+        insertAt = chain.length;
+      }
+      const below = insertAt < chain.length ? chain[insertAt] : content;
+      const wrap = makeTransform(targetType, below);
+      if (below) {
+        workingRoot = findById(root, below.id)?.update(wrap) ?? null;
+      } else {
+        // Chain ends in an empty transform: the new one becomes its child.
+        const last = chain[chain.length - 1];
+        workingRoot =
+          findById(root, last.id)?.update({ ...last, child: wrap }) ?? null;
+      }
       targetId = wrap.id;
       createdByModal = true;
     }
